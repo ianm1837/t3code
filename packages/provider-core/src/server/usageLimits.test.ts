@@ -89,10 +89,11 @@ describe("applyUsageLimitsUpdate", () => {
     ).toEqual({ checkedAt, windows: [weekly], unavailable: { reason: "probeFailed" } });
   });
 
-  it("preserves reset credits and a $0 cap when a streamed window update changes usage", () => {
+  it("preserves reset credits, a $0 cap and the login fingerprint when a streamed window update changes usage", () => {
     const resetCredits = { availableCount: 2, nextExpiresAt: "2026-10-01T00:00:00.000Z" };
+    const credentialFingerprint = "a".repeat(64);
     const next = applyUsageLimitsUpdate({
-      previous: { ...published, resetCredits, zeroSpendCap: true },
+      previous: { ...published, resetCredits, zeroSpendCap: true, credentialFingerprint },
       checkedAt: "2026-09-03T12:00:05.000Z",
       update: { windows: [{ ...session, usedPercent: 55 }] },
     });
@@ -102,6 +103,7 @@ describe("applyUsageLimitsUpdate", () => {
       windows: [{ ...session, usedPercent: 55 }, weekly],
       resetCredits,
       zeroSpendCap: true,
+      credentialFingerprint,
     });
   });
 });
