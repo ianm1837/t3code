@@ -4,12 +4,14 @@ import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 import { describe, expect, it } from "vite-plus/test";
 
 import * as ClaudeResetCredits from "./claudeResetCredits.ts";
+import { claudeRateLimitEventToUpdate, makeClaudeScopedLimitNames } from "./claudeUsageLimits.ts";
 
 const NOW = Date.parse("2026-09-22T12:00:00.000Z");
 const grant = (overrides: Record<string, unknown>) => ({
@@ -106,6 +108,15 @@ effectIt.layer(NodeServices.layer)("readClaudeResetCredits", (it) => {
               cedar_ember: { eligible: true, next_grant_id: "grant_a", grants: [grant({})] },
               five_hour: { utilization: 40, resets_at: "2026-09-22T17:00:00Z" },
               seven_day: { utilization: "unknown" },
+              limits: [
+                {
+                  kind: "weekly_scoped",
+                  percent: 73,
+                  resets_at: "2026-09-24T09:00:00Z",
+                  scope: { model: { display_name: "Fable" } },
+                },
+                { kind: "weekly_scoped", percent: "high", scope: { model: {} } },
+              ],
             }),
           ),
         );
@@ -114,7 +125,11 @@ effectIt.layer(NodeServices.layer)("readClaudeResetCredits", (it) => {
         Effect.provideService(HostProcess.Platform, "linux"),
         Effect.provideService(HttpClient.HttpClient, client),
       );
-      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage(configDir);
+      const scopedLimitNames = yield* makeClaudeScopedLimitNames;
+      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage({
+        configDir,
+        scopedLimitNames,
+      });
       yield* login.requestRefresh;
       const limits = yield* login
         .read("2.1.0")
@@ -132,7 +147,25 @@ effectIt.layer(NodeServices.layer)("readClaudeResetCredits", (it) => {
           usedPercent: 40,
           resetsAt: "2026-09-22T17:00:00.000Z",
         },
+        {
+          id: "seven_day_fable",
+          kind: "weekly",
+          label: "Weekly · Fable",
+          windowDurationMins: 10080,
+          usedPercent: 73,
+          resetsAt: "2026-09-24T09:00:00.000Z",
+        },
       ]);
+      expect(
+        claudeRateLimitEventToUpdate(
+          {
+            status: "allowed",
+            rateLimitType: "seven_day_overage_included" as never,
+            utilization: 0.8,
+          },
+          yield* Ref.get(scopedLimitNames),
+        )?.windows.map((window) => [window.id, window.usedPercent]),
+      ).toEqual([["seven_day_fable", 80]]);
     }),
   );
 
@@ -147,7 +180,10 @@ effectIt.layer(NodeServices.layer)("readClaudeResetCredits", (it) => {
         Effect.provideService(HostProcess.Platform, "linux"),
         Effect.provideService(HttpClient.HttpClient, respond(429, {})),
       );
-      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage(configDir);
+      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage({
+        configDir,
+        scopedLimitNames: yield* makeClaudeScopedLimitNames,
+      });
       yield* login.requestRefresh;
       const darwinLimits = yield* login
         .read("2.1.0")
@@ -176,7 +212,10 @@ effectIt.layer(NodeServices.layer)("makeClaudeLoginUsage", (it) => {
           HttpClientResponse.fromWeb(request, Response.json(usageBody(10 * requests))),
         );
       });
-      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage(configDir);
+      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage({
+        configDir,
+        scopedLimitNames: yield* makeClaudeScopedLimitNames,
+      });
       const read = login
         .read("2.1.0")
         .pipe(
@@ -219,7 +258,10 @@ effectIt.layer(NodeServices.layer)("makeClaudeLoginUsage", (it) => {
       const client = HttpClient.make((request) =>
         Effect.succeed(HttpClientResponse.fromWeb(request, answers[requests++]!())),
       );
-      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage(configDir);
+      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage({
+        configDir,
+        scopedLimitNames: yield* makeClaudeScopedLimitNames,
+      });
       const refresh = login.requestRefresh.pipe(
         Effect.andThen(login.read("2.1.0")),
         Effect.provideService(HostProcess.Platform, "linux"),

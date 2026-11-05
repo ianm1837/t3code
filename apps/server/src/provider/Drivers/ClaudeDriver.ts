@@ -152,7 +152,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
     const secureStorageDir = claudeSecureStorageDir(processEnv);
     const loginUsage = secureStorageDir
-      ? yield* ClaudeResetCredits.makeClaudeLoginUsage(secureStorageDir)
+      ? yield* ClaudeResetCredits.makeClaudeLoginUsage({
+          configDir: secureStorageDir,
+          scopedLimitNames,
+        })
       : undefined;
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {

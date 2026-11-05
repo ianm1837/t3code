@@ -38,6 +38,14 @@ const SpendMoney = Schema.Struct({
 const decodeSpendBudget = Schema.decodeUnknownOption(
   Schema.Struct({ enabled: Schema.Boolean, used: SpendMoney, limit: SpendMoney }),
 );
+const decodeWeeklyScopedLimit = Schema.decodeUnknownOption(
+  Schema.Struct({
+    kind: Schema.Literal("weekly_scoped"),
+    percent: Schema.Number,
+    resets_at: Schema.optional(Schema.NullOr(Schema.String)),
+    scope: Schema.Struct({ model: Schema.Struct({ display_name: Schema.String }) }),
+  }),
+);
 const decodeUnifiedWindow = Schema.decodeUnknownOption(
   Schema.Struct({ utilization: Schema.Finite, resetsAt: Schema.optional(Schema.Finite) }),
 );
@@ -115,6 +123,16 @@ interface ModelScopedWindow {
   readonly display_name: string;
   readonly utilization: number | null;
   readonly resets_at: string | null;
+}
+
+export function claudeModelScopedFromUsageLimits(limits: unknown): ModelScopedWindow[] {
+  return (Array.isArray(limits) ? limits : []).flatMap((raw) =>
+    Option.toArray(decodeWeeklyScopedLimit(raw)).map((limit) => ({
+      display_name: limit.scope.model.display_name,
+      utilization: limit.percent,
+      resets_at: limit.resets_at ?? null,
+    })),
+  );
 }
 
 function readModelScoped(rateLimits: object): ReadonlyArray<ModelScopedWindow> {

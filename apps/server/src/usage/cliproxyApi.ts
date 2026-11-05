@@ -15,7 +15,10 @@ import { HttpClient, HttpClientError, HttpClientRequest, HttpClientResponse } fr
 
 import { codexPlanLabel } from "../provider/CodexProvider.ts";
 import { codexRateLimitsToLimits } from "../provider/codexUsageLimits.ts";
-import { claudeUsageResponseToLimits } from "../provider/claudeUsageLimits.ts";
+import {
+  claudeModelScopedFromUsageLimits,
+  claudeUsageResponseToLimits,
+} from "../provider/claudeUsageLimits.ts";
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 
 /** A hub with its management key already read from wherever the setting keeps it. */
@@ -72,22 +75,7 @@ const ClaudeUsage = Schema.Struct({
       }),
     ),
   ),
-  limits: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        kind: Schema.String,
-        percent: Schema.optional(Schema.NullOr(Schema.Number)),
-        resets_at: Schema.optional(Schema.NullOr(Schema.String)),
-        scope: Schema.optional(
-          Schema.NullOr(
-            Schema.Struct({
-              model: Schema.optional(Schema.NullOr(Schema.Struct({ display_name: Schema.String }))),
-            }),
-          ),
-        ),
-      }),
-    ),
-  ),
+  limits: Schema.optional(Schema.Unknown),
 });
 const CreditList = Schema.Struct({
   credits: Schema.Array(
@@ -285,21 +273,10 @@ export const makeCliproxyApi = Effect.gen(function* () {
       if (account.provider === "claude") {
         const body = yield* apiCall(hub, account, "https://api.anthropic.com/api/oauth/usage");
         const usage = yield* decodeClaudeUsage(body);
-        const model_scoped = (usage.limits ?? []).flatMap((limit) =>
-          limit.kind === "weekly_scoped" && limit.scope?.model && typeof limit.percent === "number"
-            ? [
-                {
-                  display_name: limit.scope.model.display_name,
-                  utilization: limit.percent,
-                  resets_at: limit.resets_at ?? null,
-                },
-              ]
-            : [],
-        );
         const rateLimits = {
           five_hour: usage.five_hour ?? null,
           seven_day: usage.seven_day ?? null,
-          model_scoped,
+          model_scoped: claudeModelScopedFromUsageLimits(usage.limits),
           spend: usage.spend,
           extra_usage: usage.extra_usage ?? null,
         };

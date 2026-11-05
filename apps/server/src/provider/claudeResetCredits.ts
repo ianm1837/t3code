@@ -15,7 +15,11 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
 
-import { claudeUsageResponseToLimits } from "./claudeUsageLimits.ts";
+import {
+  type ClaudeScopedLimitNames,
+  claudeModelScopedFromUsageLimits,
+  recordClaudeUsageResponse,
+} from "./claudeUsageLimits.ts";
 
 const API_BASE = "https://api.anthropic.com";
 const PROGRAM = "cedar_ember";
@@ -50,6 +54,7 @@ const UsageResponse = Schema.Struct({
   cedar_ember: Schema.optional(Schema.NullOr(Schema.Unknown)),
   five_hour: Schema.optional(Schema.Unknown),
   seven_day: Schema.optional(Schema.Unknown),
+  limits: Schema.optional(Schema.Unknown),
 });
 const decodeUsageWindow = Schema.decodeUnknownOption(
   Schema.Struct({
@@ -206,9 +211,13 @@ const usageWindow = (raw: unknown) => {
   return window ? { utilization: window.utilization, resets_at: window.resets_at ?? null } : null;
 };
 
-export const makeClaudeLoginUsage = Effect.fn("makeClaudeLoginUsage")(function* (
-  configDir: string,
-) {
+export const makeClaudeLoginUsage = Effect.fn("makeClaudeLoginUsage")(function* ({
+  configDir,
+  scopedLimitNames,
+}: {
+  readonly configDir: string;
+  readonly scopedLimitNames: Ref.Ref<ClaudeScopedLimitNames>;
+}) {
   const state = yield* Ref.make<{
     readonly reading: ServerProviderUsageLimits | undefined;
     readonly readAtMs: number;
@@ -255,16 +264,15 @@ export const makeClaudeLoginUsage = Effect.fn("makeClaudeLoginUsage")(function* 
       yield* Ref.update(state, (latest) => ({ ...latest, retryAtMs: nowMs + seconds * 1000 }));
       return current.reading;
     }
-    const reading = claudeUsageResponseToLimits({
+    const rateLimits = {
+      five_hour: usageWindow(result.body.five_hour),
+      seven_day: usageWindow(result.body.seven_day),
+      model_scoped: claudeModelScopedFromUsageLimits(result.body.limits),
+    };
+    const reading = yield* recordClaudeUsageResponse(scopedLimitNames, {
       checkedAt: DateTime.formatIso(now),
-      response: {
-        rate_limits_available: true,
-        rate_limits: {
-          five_hour: usageWindow(result.body.five_hour),
-          seven_day: usageWindow(result.body.seven_day),
-        },
-      },
-    }).limits;
+      response: { rate_limits_available: true, rate_limits: rateLimits },
+    });
     yield* Ref.update(state, (latest) => ({ ...latest, reading, readAtMs: nowMs }));
     return reading;
   });
