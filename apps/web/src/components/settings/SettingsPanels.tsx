@@ -518,6 +518,9 @@ export function useSettingsRestore(onRestored?: () => void) {
     ...(settings.effortDisplay !== DEFAULT_UNIFIED_SETTINGS.effortDisplay
       ? [gt("Effort display")]
       : []),
+    ...(settings.timelineMinimapEnabled !== DEFAULT_UNIFIED_SETTINGS.timelineMinimapEnabled
+      ? ["Timeline minimap"]
+      : []),
     ...(settings.mathRenderingEnabled !== DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled
       ? [gt("Render math")]
       : []),
@@ -714,6 +717,7 @@ export function useSettingsRestore(onRestored?: () => void) {
       chatWidth: DEFAULT_UNIFIED_SETTINGS.chatWidth,
       htmlPreviewWidth: DEFAULT_UNIFIED_SETTINGS.htmlPreviewWidth,
       effortDisplay: DEFAULT_UNIFIED_SETTINGS.effortDisplay,
+      timelineMinimapEnabled: DEFAULT_UNIFIED_SETTINGS.timelineMinimapEnabled,
       mathRenderingEnabled: DEFAULT_UNIFIED_SETTINGS.mathRenderingEnabled,
       language: DEFAULT_UNIFIED_SETTINGS.language,
       timestampFormat: DEFAULT_UNIFIED_SETTINGS.timestampFormat,

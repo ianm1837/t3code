@@ -797,7 +797,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   // Run status/timestamps change per stream event; keep them out of shared row context.
   const runs = useStableHandoffRuns(runsProp);
-  const minimapItems = deriveTimelineMinimapItems(rows);
+  const timelineMinimapEnabled = useClientSettings((settings) => settings.timelineMinimapEnabled);
+  const minimapItems = timelineMinimapEnabled ? deriveTimelineMinimapItems(rows) : [];
   const minimapRowIndices = minimapItems.map((item) => item.rowIndex);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false

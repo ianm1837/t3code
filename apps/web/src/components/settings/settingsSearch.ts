@@ -408,6 +408,12 @@ export const SETTINGS_SEARCH_ITEMS = [
     searchTerms: [msg("reasoning effort thinking bars graph word label level composer")],
   },
   {
+    id: "timeline-minimap",
+    title: "Timeline minimap",
+    to: "/settings/appearance",
+    searchTerms: ["message navigation jump scroll turns marks outline hide"],
+  },
+  {
     id: "math-rendering",
     title: msg("Render math"),
     to: "/settings/appearance",
