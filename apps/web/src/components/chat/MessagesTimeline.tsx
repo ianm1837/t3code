@@ -93,6 +93,7 @@ import { TooltipScrollDismissArea } from "../ui/tooltip";
 import { WorktreeSetupCard } from "./WorktreeSetupCard";
 import { useOpenPrLink } from "~/lib/openPullRequestLink";
 import { useMediaQuery } from "~/hooks/useMediaQuery";
+import { useClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
 import { type TimestampFormat } from "@t3tools/contracts/settings";
 import { type HandoffTimelineRun } from "./V2LifecycleRow";
@@ -696,7 +697,8 @@ const ConversationTimeline = memo(function ConversationTimeline({
   );
   // Run status/timestamps change per stream event; keep them out of shared row context.
   const runs = useStableHandoffRuns(runsProp);
-  const minimapItems = deriveTimelineMinimapItems(rows);
+  const timelineMinimapEnabled = useClientSettings((settings) => settings.timelineMinimapEnabled);
+  const minimapItems = timelineMinimapEnabled ? deriveTimelineMinimapItems(rows) : [];
   const minimapRowIndices = minimapItems.map((item) => item.rowIndex);
   const restoreRowIndex =
     restoringThreadPosition && rememberedPosition?.atEnd === false

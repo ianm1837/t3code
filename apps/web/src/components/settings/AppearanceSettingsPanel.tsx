@@ -324,6 +324,31 @@ export function AppearanceSettingsPanel() {
           }
         />
         <SettingsRow
+          {...searchableSetting("timeline-minimap")}
+          description="Show a mark beside the chat for each of your messages, to preview or jump back to any of them."
+          resetAction={
+            settings.timelineMinimapEnabled !== DEFAULT_UNIFIED_SETTINGS.timelineMinimapEnabled ? (
+              <SettingResetButton
+                label="timeline minimap"
+                onClick={() =>
+                  updateSettings({
+                    timelineMinimapEnabled: DEFAULT_UNIFIED_SETTINGS.timelineMinimapEnabled,
+                  })
+                }
+              />
+            ) : null
+          }
+          control={
+            <Switch
+              checked={settings.timelineMinimapEnabled}
+              onCheckedChange={(checked) =>
+                updateSettings({ timelineMinimapEnabled: Boolean(checked) })
+              }
+              aria-label="Show timeline minimap"
+            />
+          }
+        />
+        <SettingsRow
           {...searchableSetting("math-rendering")}
           description="Typeset LaTeX math, such as $x^2$ or \[x^2\], in messages and Markdown previews. The composer keeps TeX source editable."
           resetAction={
