@@ -35,6 +35,7 @@ import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
+  claudeSecureStorageDir,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
@@ -185,6 +186,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     // Retain reports until the registry subscribes; end its listener on teardown.
     const workspaceRescans = yield* Queue.unbounded<string, Cause.Done>();
     yield* Effect.addFinalizer(() => Queue.end(workspaceRescans));
+    const secureStorageDir = claudeSecureStorageDir(processEnv);
+    const loginUsage = secureStorageDir
+      ? yield* ClaudeResetCredits.makeClaudeLoginUsage(secureStorageDir)
+      : undefined;
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -196,7 +201,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       },
       {
         scopedLimitNames,
-        onUsageLimits: (update) => snapshot.applyUsageLimits(update),
+        onUsageLimits: (update) =>
+          (loginUsage ? loginUsage.record(update) : Effect.void).pipe(
+            Effect.andThen(snapshot.applyUsageLimits(update)),
+          ),
         onSessionInit: (cwd) => Queue.offer(workspaceRescans, cwd).pipe(Effect.asVoid),
         modelCatalog,
         routeModelCatalog: modelRoutes.route,
@@ -299,6 +307,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                   Effect.provideService(FileSystem.FileSystem, fileSystem),
                   Effect.provideService(Path.Path, path),
                 ),
+              loginUsage &&
+                ((version) =>
+                  loginUsage
+                    .read(version)
+                    .pipe(
+                      Effect.provideService(HttpClient.HttpClient, httpClient),
+                      Effect.provideService(FileSystem.FileSystem, fileSystem),
+                      Effect.provideService(Path.Path, path),
+                    )),
             ),
           ),
           Effect.tap((provider) =>
@@ -504,7 +521,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       displayName,
       accentColor,
       enabled,
-      snapshot,
+      snapshot: loginUsage
+        ? { ...snapshot, refresh: loginUsage.requestRefresh.pipe(Effect.andThen(snapshot.refresh)) }
+        : snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       workspaceRescans: Stream.fromQueue(workspaceRescans),
       // Unreadable settings report no limit; the thread's own notice covers a refused mode.
