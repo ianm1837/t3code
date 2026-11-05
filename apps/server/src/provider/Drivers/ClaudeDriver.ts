@@ -179,7 +179,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     yield* Effect.addFinalizer(() => Queue.end(workspaceRescans));
     const secureStorageDir = claudeSecureStorageDir(processEnv);
     const loginUsage = secureStorageDir
-      ? yield* ClaudeResetCredits.makeClaudeLoginUsage(secureStorageDir)
+      ? yield* ClaudeResetCredits.makeClaudeLoginUsage({
+          configDir: secureStorageDir,
+          scopedLimitNames,
+        })
       : undefined;
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
