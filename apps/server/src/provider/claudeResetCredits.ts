@@ -1,20 +1,28 @@
 import type {
   ProviderConsumeResetCreditOutcome,
+  ProviderUsageLimitsUpdate,
   ServerProviderResetCredits,
+  ServerProviderUsageLimits,
 } from "@t3tools/contracts";
+import { applyUsageLimitsUpdate, makeUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Path from "effect/Path";
+import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/http";
+
+import { claudeUsageResponseToLimits } from "./claudeUsageLimits.ts";
 
 const API_BASE = "https://api.anthropic.com";
 const PROGRAM = "cedar_ember";
 const GRANT_ID = /^[a-z0-9_-]{1,40}$/;
 const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
+const LOGIN_USAGE_FRESH_MS = 5 * 60_000;
+const DEFAULT_RETRY_AFTER_SECONDS = 30 * 60;
 const COMPLETE_TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/;
 
 const Credentials = Schema.Struct({
@@ -40,7 +48,15 @@ const CedarEmber = Schema.Struct({
 });
 const UsageResponse = Schema.Struct({
   cedar_ember: Schema.optional(Schema.NullOr(Schema.Unknown)),
+  five_hour: Schema.optional(Schema.Unknown),
+  seven_day: Schema.optional(Schema.Unknown),
 });
+const decodeUsageWindow = Schema.decodeUnknownOption(
+  Schema.Struct({
+    utilization: Schema.Number,
+    resets_at: Schema.optional(Schema.NullOr(Schema.String)),
+  }),
+);
 const decodeCedarEmber = Schema.decodeUnknownOption(CedarEmber);
 const ClaimResponse = Schema.Struct({
   result: Schema.Literals([
@@ -150,8 +166,8 @@ const withClaudeHeaders = (token: string, version: string) =>
     "user-agent": `claude-cli/${version} (external, cli)`,
   });
 
-export const readClaudeResetCredits = Effect.fn("readClaudeResetCredits")(
-  function* (configDir: string, version: string) {
+const readUsage = Effect.fn("claudeResetCredits.readUsage")(
+  function* ({ configDir, version }: { readonly configDir: string; readonly version: string }) {
     const token = yield* readAccessToken(configDir);
     if (!token) return undefined;
     const client = yield* HttpClient.HttpClient;
@@ -160,17 +176,105 @@ export const readClaudeResetCredits = Effect.fn("readClaudeResetCredits")(
         urlParams: { cedar_ember: "1", skip_spend: "1" },
       }).pipe(withClaudeHeaders(token, version)),
     );
-    const body = yield* HttpClientResponse.schemaBodyJson(UsageResponse)(
-      yield* HttpClientResponse.filterStatusOk(response),
-    );
-    return claudeResetCreditsToContract(
-      body.cedar_ember,
-      DateTime.toEpochMillis(yield* DateTime.now),
-    );
+    if (response.status === 429) {
+      return { retryAfterSeconds: Number(response.headers["retry-after"]) };
+    }
+    return {
+      body: yield* HttpClientResponse.schemaBodyJson(UsageResponse)(
+        yield* HttpClientResponse.filterStatusOk(response),
+      ),
+    };
   },
   Effect.timeout("10 seconds"),
   Effect.orElseSucceed(() => undefined),
 );
+
+export const readClaudeResetCredits = Effect.fn("readClaudeResetCredits")(function* (
+  configDir: string,
+  version: string,
+) {
+  const result = yield* readUsage({ configDir, version });
+  if (!result || !("body" in result)) return undefined;
+  return claudeResetCreditsToContract(
+    result.body.cedar_ember,
+    DateTime.toEpochMillis(yield* DateTime.now),
+  );
+});
+
+const usageWindow = (raw: unknown) => {
+  const window = Option.getOrUndefined(decodeUsageWindow(raw));
+  return window ? { utilization: window.utilization, resets_at: window.resets_at ?? null } : null;
+};
+
+export const makeClaudeLoginUsage = Effect.fn("makeClaudeLoginUsage")(function* (
+  configDir: string,
+) {
+  const state = yield* Ref.make<{
+    readonly reading: ServerProviderUsageLimits | undefined;
+    readonly readAtMs: number;
+    readonly retryAtMs: number;
+    readonly refreshRequested: boolean;
+  }>({ reading: undefined, readAtMs: -Infinity, retryAtMs: -Infinity, refreshRequested: false });
+
+  const record = (update: ProviderUsageLimitsUpdate & { readonly checkedAt: string }) =>
+    DateTime.now.pipe(
+      Effect.flatMap((now) =>
+        Ref.update(state, (current) => ({
+          ...current,
+          readAtMs: DateTime.toEpochMillis(now),
+          reading: applyUsageLimitsUpdate({
+            previous:
+              current.reading ?? makeUsageLimits({ checkedAt: update.checkedAt, windows: [] }),
+            update,
+            checkedAt: update.checkedAt,
+          }),
+        })),
+      ),
+    );
+
+  const read = Effect.fn("ClaudeLoginUsage.read")(function* (version: string | null) {
+    const current = yield* Ref.getAndUpdate(state, (latest) => ({
+      ...latest,
+      refreshRequested: false,
+    }));
+    const now = yield* DateTime.now;
+    const nowMs = DateTime.toEpochMillis(now);
+    if (
+      !current.refreshRequested ||
+      !version ||
+      nowMs - current.readAtMs < LOGIN_USAGE_FRESH_MS ||
+      nowMs < current.retryAtMs
+    ) {
+      return current.reading;
+    }
+    const result = yield* readUsage({ configDir, version });
+    if (!result) return current.reading;
+    if (!("body" in result)) {
+      const seconds =
+        result.retryAfterSeconds > 0 ? result.retryAfterSeconds : DEFAULT_RETRY_AFTER_SECONDS;
+      yield* Ref.update(state, (latest) => ({ ...latest, retryAtMs: nowMs + seconds * 1000 }));
+      return current.reading;
+    }
+    const reading = claudeUsageResponseToLimits({
+      checkedAt: DateTime.formatIso(now),
+      response: {
+        rate_limits_available: true,
+        rate_limits: {
+          five_hour: usageWindow(result.body.five_hour),
+          seven_day: usageWindow(result.body.seven_day),
+        },
+      },
+    }).limits;
+    yield* Ref.update(state, (latest) => ({ ...latest, reading, readAtMs: nowMs }));
+    return reading;
+  });
+
+  return {
+    record,
+    requestRefresh: Ref.update(state, (latest) => ({ ...latest, refreshRequested: true })),
+    read,
+  };
+});
 
 export const readClaudeOrganizationId = (accountConfigPath: string) =>
   readJson(Config, accountConfigPath).pipe(

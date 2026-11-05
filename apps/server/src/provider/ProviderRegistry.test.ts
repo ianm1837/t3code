@@ -3338,9 +3338,21 @@ it.layer(
         const storageDir = yield* fileSystem.makeTempDirectoryScoped({
           prefix: "t3-claude-login-",
         });
+        const loginReading = {
+          checkedAt: "2026-11-04T10:00:00.000Z",
+          windows: [
+            {
+              id: "five_hour",
+              kind: "session",
+              label: "Session",
+              windowDurationMins: 300,
+              usedPercent: 70,
+            },
+          ],
+        } as const;
         // Reset credits come from the shared config's login, so only that login's row may offer them.
         const configLoginCredits = () => Effect.succeed({ availableCount: 1 });
-        const probe = (subscriptionType: string, utilization: number) =>
+        const probe = (subscriptionType: string) =>
           claudeCapabilities({
             email: "account-b@example.com",
             workspaceId: "11111111-1111-1111-1111-111111111111",
@@ -3349,25 +3361,26 @@ it.layer(
             apiProvider: "firstParty",
             usage: {
               rate_limits_available: true,
-              rate_limits: { five_hour: { utilization, resets_at: null } },
+              rate_limits: { five_hour: { utilization: 10, resets_at: null } },
             },
           });
         const settings = { ...defaultClaudeSettings, homePath: configDir };
         const separateStorage = { CLAUDE_SECURESTORAGE_CONFIG_DIR: storageDir };
-        const check = (subscriptionType: string, utilization: number, environment = {}) =>
+        const check = (subscriptionType: string, environment = {}, reading?: typeof loginReading) =>
           checkClaudeProviderStatus(
             settings,
-            probe(subscriptionType, utilization),
+            probe(subscriptionType),
             environment,
             undefined,
             undefined,
             undefined,
             configLoginCredits,
+            () => Effect.succeed(reading),
           );
         const instances = [
-          ["claude-max", yield* check("max", 10)],
-          ["claude-pro", yield* check("pro", 70, separateStorage)],
-          ["claude-pro-2", yield* check("pro", 70, separateStorage)],
+          ["claude-max", yield* check("max")],
+          ["claude-pro", yield* check("pro", separateStorage, loginReading)],
+          ["claude-pro-2", yield* check("pro", separateStorage, loginReading)],
         ] as const;
         const providers = instances.map(([instanceId, draft]) => ({
           ...draft,
@@ -3396,6 +3409,9 @@ it.layer(
             [70, undefined],
           ],
         );
+        const unread = yield* check("pro", separateStorage);
+        assert.deepStrictEqual(unread.usageLimits?.windows, []);
+        assert.strictEqual(unread.usageLimits?.unavailable?.reason, "probeFailed");
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {

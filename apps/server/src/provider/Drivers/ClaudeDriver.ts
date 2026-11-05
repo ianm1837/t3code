@@ -29,6 +29,7 @@ import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
+  claudeSecureStorageDir,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
   probeClaudeWorkspaceSnapshot,
@@ -149,6 +150,10 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     });
 
     const scopedLimitNames = yield* makeClaudeScopedLimitNames;
+    const secureStorageDir = claudeSecureStorageDir(processEnv);
+    const loginUsage = secureStorageDir
+      ? yield* ClaudeResetCredits.makeClaudeLoginUsage(secureStorageDir)
+      : undefined;
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
         instanceId,
@@ -158,7 +163,13 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
         enabled,
         config,
       },
-      { scopedLimitNames, onUsageLimits: (update) => snapshot.applyUsageLimits(update) },
+      {
+        scopedLimitNames,
+        onUsageLimits: (update) =>
+          (loginUsage ? loginUsage.record(update) : Effect.void).pipe(
+            Effect.andThen(snapshot.applyUsageLimits(update)),
+          ),
+      },
     ).pipe(
       Effect.mapError(
         (cause) =>
@@ -251,6 +262,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                   Effect.provideService(FileSystem.FileSystem, fileSystem),
                   Effect.provideService(Path.Path, path),
                 ),
+              loginUsage &&
+                ((version) =>
+                  loginUsage
+                    .read(version)
+                    .pipe(
+                      Effect.provideService(HttpClient.HttpClient, httpClient),
+                      Effect.provideService(FileSystem.FileSystem, fileSystem),
+                      Effect.provideService(Path.Path, path),
+                    )),
             ),
           ),
           Effect.tap((provider) =>
@@ -375,7 +395,9 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       displayName,
       accentColor,
       enabled,
-      snapshot,
+      snapshot: loginUsage
+        ? { ...snapshot, refresh: loginUsage.requestRefresh.pipe(Effect.andThen(snapshot.refresh)) }
+        : snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       snapshotForCwd: (cwd: string) =>
         snapshot.getSnapshot.pipe(

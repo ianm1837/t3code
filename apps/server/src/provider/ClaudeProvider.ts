@@ -4,6 +4,7 @@ import {
   type ServerProvider,
   type ServerProviderSlashCommand,
   type ServerProviderResetCredits,
+  type ServerProviderUsageLimits,
 } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Digest from "effect/crypto/Digest";
@@ -347,6 +348,9 @@ class ClaudeCapabilitiesProbeSdkError extends Schema.TaggedError<ClaudeCapabilit
   }
 }
 
+export const claudeSecureStorageDir = (environment: NodeJS.ProcessEnv | undefined) =>
+  environment?.CLAUDE_SECURESTORAGE_CONFIG_DIR?.trim() || undefined;
+
 /** A never-yielding prompt allows local initialization IPC without sending an Anthropic request. */
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
@@ -400,15 +404,17 @@ const probeClaudeCapabilities = (
         // Only the rate limits are read, so skip the local transcript scan that fills
         // `behaviors`: with a few GB of transcripts it outlasts the deadline.
         const usageCheckedAt = DateTime.formatIso(yield* DateTime.now);
-        const usageResult = includeUsage
-          ? yield* Effect.tryPromise({
-              try: () =>
-                q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
-                  skipBehaviors: true,
-                }),
-              catch: (cause) => new ClaudeCapabilitiesProbeSdkError({ operation: "usage", cause }),
-            }).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result)
-          : undefined;
+        const usageResult =
+          includeUsage && !claudeSecureStorageDir(environment)
+            ? yield* Effect.tryPromise({
+                try: () =>
+                  q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET({
+                    skipBehaviors: true,
+                  }),
+                catch: (cause) =>
+                  new ClaudeCapabilitiesProbeSdkError({ operation: "usage", cause }),
+              }).pipe(Effect.timeout(DEFAULT_TIMEOUT_MS), Effect.result)
+            : undefined;
         const usage =
           usageResult && Result.isSuccess(usageResult)
             ? {
@@ -508,6 +514,9 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
   resolveResetCredits?: (version: string) => Effect.Effect<ServerProviderResetCredits | undefined>,
+  resolveLoginUsageLimits?: (
+    version: string | null,
+  ) => Effect.Effect<ServerProviderUsageLimits | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -689,17 +698,20 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       authMethod: capabilities.tokenSource,
     });
   const usageCheckedAt = capabilities.usageCheckedAt ?? checkedAt;
-  const usageLimits = !capabilities.usage
-    ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
-    : scopedLimitNames
-      ? yield* recordClaudeUsageResponse(scopedLimitNames, {
-          response: capabilities.usage,
-          checkedAt: usageCheckedAt,
-        })
-      : claudeUsageResponseToLimits({
-          response: capabilities.usage,
-          checkedAt: usageCheckedAt,
-        }).limits;
+  const usageLimits = claudeSecureStorageDir(resolvedEnvironment)
+    ? ((resolveLoginUsageLimits ? yield* resolveLoginUsageLimits(parsedVersion) : undefined) ??
+      makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" }))
+    : !capabilities.usage
+      ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
+      : scopedLimitNames
+        ? yield* recordClaudeUsageResponse(scopedLimitNames, {
+            response: capabilities.usage,
+            checkedAt: usageCheckedAt,
+          })
+        : claudeUsageResponseToLimits({
+            response: capabilities.usage,
+            checkedAt: usageCheckedAt,
+          }).limits;
   // Claude Code keeps this login here but reports the shared config's account, which is not this login's.
   const secureStorageDir = resolvedEnvironment.CLAUDE_SECURESTORAGE_CONFIG_DIR?.trim();
   const credentialFingerprint = secureStorageDir

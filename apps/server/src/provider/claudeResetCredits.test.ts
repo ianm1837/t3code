@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
+import * as TestClock from "effect/testing/TestClock";
 import { HttpClient, HttpClientResponse, UrlParams } from "effect/http";
 import { describe, expect, it } from "vite-plus/test";
 
@@ -88,7 +89,7 @@ describe("claudeResetCreditsToContract", () => {
 });
 
 effectIt.layer(NodeServices.layer)("readClaudeResetCredits", (it) => {
-  it.effect("reads the grants with the CLI's request", () =>
+  it.effect("reads the grants and usage windows with the CLI's request", () =>
     Effect.gen(function* () {
       const { configDir } = yield* writeLogin;
       const client = HttpClient.make((request) => {
@@ -103,6 +104,8 @@ effectIt.layer(NodeServices.layer)("readClaudeResetCredits", (it) => {
             request,
             Response.json({
               cedar_ember: { eligible: true, next_grant_id: "grant_a", grants: [grant({})] },
+              five_hour: { utilization: 40, resets_at: "2026-09-22T17:00:00Z" },
+              seven_day: { utilization: "unknown" },
             }),
           ),
         );
@@ -111,7 +114,25 @@ effectIt.layer(NodeServices.layer)("readClaudeResetCredits", (it) => {
         Effect.provideService(HostProcess.Platform, "linux"),
         Effect.provideService(HttpClient.HttpClient, client),
       );
+      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage(configDir);
+      yield* login.requestRefresh;
+      const limits = yield* login
+        .read("2.1.0")
+        .pipe(
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HttpClient.HttpClient, client),
+        );
       expect(credits).toEqual({ availableCount: 1, nextCreditId: "grant_a" });
+      expect(limits?.windows).toEqual([
+        {
+          id: "five_hour",
+          kind: "session",
+          label: "Session",
+          windowDurationMins: 300,
+          usedPercent: 40,
+          resetsAt: "2026-09-22T17:00:00.000Z",
+        },
+      ]);
     }),
   );
 
@@ -126,7 +147,96 @@ effectIt.layer(NodeServices.layer)("readClaudeResetCredits", (it) => {
         Effect.provideService(HostProcess.Platform, "linux"),
         Effect.provideService(HttpClient.HttpClient, respond(429, {})),
       );
-      expect([darwin, limited]).toEqual([undefined, undefined]);
+      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage(configDir);
+      yield* login.requestRefresh;
+      const darwinLimits = yield* login
+        .read("2.1.0")
+        .pipe(
+          Effect.provideService(HostProcess.Platform, "darwin"),
+          Effect.provideService(HttpClient.HttpClient, refuseRequests),
+        );
+      expect([darwin, limited, darwinLimits]).toEqual([undefined, undefined, undefined]);
+    }),
+  );
+});
+
+const usageBody = (utilization: number) => ({ five_hour: { utilization, resets_at: null } });
+const sessionPercent = (
+  limits: { readonly windows: ReadonlyArray<{ readonly usedPercent: number }> } | undefined,
+) => limits?.windows[0]?.usedPercent;
+
+effectIt.layer(NodeServices.layer)("makeClaudeLoginUsage", (it) => {
+  it.effect("asks the endpoint only on an explicit refresh, at most every five minutes", () =>
+    Effect.gen(function* () {
+      const { configDir } = yield* writeLogin;
+      let requests = 0;
+      const client = HttpClient.make((request) => {
+        requests += 1;
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(request, Response.json(usageBody(10 * requests))),
+        );
+      });
+      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage(configDir);
+      const read = login
+        .read("2.1.0")
+        .pipe(
+          Effect.provideService(HostProcess.Platform, "linux"),
+          Effect.provideService(HttpClient.HttpClient, client),
+        );
+      const refresh = login.requestRefresh.pipe(Effect.andThen(read));
+
+      expect(yield* read).toBeUndefined();
+      expect(sessionPercent(yield* refresh)).toBe(10);
+      expect(sessionPercent(yield* refresh)).toBe(10);
+      expect(sessionPercent(yield* read)).toBe(10);
+      expect(requests).toBe(1);
+
+      yield* TestClock.adjust("5 minutes");
+      yield* login.record({
+        checkedAt: "1970-01-01T00:05:00.000Z",
+        windows: [{ id: "five_hour", kind: "session", label: "Session", usedPercent: 55 }],
+      });
+      expect(yield* refresh).toMatchObject({ checkedAt: "1970-01-01T00:05:00.000Z" });
+      expect(sessionPercent(yield* refresh)).toBe(55);
+      expect(requests).toBe(1);
+
+      yield* TestClock.adjust("5 minutes");
+      expect(sessionPercent(yield* read)).toBe(55);
+      expect(sessionPercent(yield* refresh)).toBe(20);
+      expect(requests).toBe(2);
+    }),
+  );
+
+  it.effect("waits out a rate limit and keeps the last reading meanwhile", () =>
+    Effect.gen(function* () {
+      const { configDir } = yield* writeLogin;
+      const answers = [
+        () => Response.json(usageBody(30)),
+        () => new Response(null, { status: 429, headers: { "retry-after": "3600" } }),
+        () => Response.json(usageBody(40)),
+      ];
+      let requests = 0;
+      const client = HttpClient.make((request) =>
+        Effect.succeed(HttpClientResponse.fromWeb(request, answers[requests++]!())),
+      );
+      const login = yield* ClaudeResetCredits.makeClaudeLoginUsage(configDir);
+      const refresh = login.requestRefresh.pipe(
+        Effect.andThen(login.read("2.1.0")),
+        Effect.provideService(HostProcess.Platform, "linux"),
+        Effect.provideService(HttpClient.HttpClient, client),
+      );
+
+      const first = yield* refresh;
+      expect(sessionPercent(first)).toBe(30);
+      yield* TestClock.adjust("5 minutes");
+      expect(yield* refresh).toBe(first);
+      expect(requests).toBe(2);
+      yield* TestClock.adjust("59 minutes");
+      expect(yield* refresh).toBe(first);
+      expect(requests).toBe(2);
+      yield* TestClock.adjust("1 minute");
+      expect(sessionPercent(yield* refresh)).toBe(40);
+      expect(requests).toBe(3);
     }),
   );
 });

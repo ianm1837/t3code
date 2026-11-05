@@ -249,6 +249,62 @@ describe("claudeRateLimitEventToUpdate", () => {
     });
   });
 
+  it("reads both windows from the unified block, even without a top-level utilization", () => {
+    const session = {
+      id: "five_hour",
+      kind: "session",
+      label: "Session",
+      windowDurationMins: 300,
+      usedPercent: 82,
+      resetsAt: "2026-10-30T01:30:00.000Z",
+    };
+    const weekly = {
+      id: "seven_day",
+      kind: "weekly",
+      label: "Weekly",
+      windowDurationMins: 10080,
+      usedPercent: 11,
+      resetsAt: "2026-11-05T12:20:00.000Z",
+    };
+    const unifiedWindows = {
+      five_hour: { utilization: 0.82, resetsAt: 1_793_323_800, status: "allowed" },
+      seven_day: { utilization: 0.11, resetsAt: 1_793_881_200, status: "allowed" },
+    };
+    expect(
+      claudeRateLimitEventToUpdate(
+        {
+          status: "allowed",
+          rateLimitType: "five_hour",
+          resetsAt: 1_793_323_800,
+          ...({ unifiedWindows } as object),
+        },
+        noNames,
+      ),
+    ).toEqual({ windows: [session, weekly] });
+    expect(
+      claudeRateLimitEventToUpdate(
+        {
+          status: "allowed_warning",
+          rateLimitType: "seven_day",
+          utilization: 0.93,
+          resetsAt: 1_793_881_200,
+          ...({
+            unifiedWindows: {
+              five_hour: { utilization: 0.71, resetsAt: 1_793_323_800 },
+              seven_day: { utilization: 0.93, resetsAt: 1_793_881_200 },
+            },
+          } as object),
+        },
+        noNames,
+      ),
+    ).toEqual({
+      windows: [
+        { ...session, usedPercent: 71 },
+        { ...weekly, usedPercent: 93 },
+      ],
+    });
+  });
+
   it("lands the streamed overage-included bucket on the row the probe named", () => {
     const event = {
       status: "allowed",
