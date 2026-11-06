@@ -1,5 +1,8 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it as effectIt } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
@@ -349,10 +352,15 @@ describe("claudeRateLimitEventToUpdate", () => {
   });
 });
 
-describe("makeClaudeLoginUsageLimits", () => {
-  effectIt.effect("holds only what live events reported", () =>
+effectIt.layer(NodeServices.layer)("makeClaudeLoginUsageLimits", (it) => {
+  const session = { id: "five_hour", kind: "session", label: "Session", usedPercent: 90 } as const;
+
+  it.effect("holds only what live events reported, across a restart", () =>
     Effect.gen(function* () {
-      const login = yield* makeClaudeLoginUsageLimits;
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const file = path.join(yield* fs.makeTempDirectoryScoped(), "login.json");
+      const login = yield* makeClaudeLoginUsageLimits(file);
       expect(yield* login.current).toBeUndefined();
       const event = claudeRateLimitEventToUpdate(
         {
@@ -368,14 +376,31 @@ describe("makeClaudeLoginUsageLimits", () => {
         noNames,
       )!;
       yield* login.record({ ...event, checkedAt });
-      yield* login.record({
-        checkedAt: "2026-07-18T10:05:00.000Z",
-        windows: [{ id: "five_hour", kind: "session", label: "Session", usedPercent: 90 }],
-      });
-      expect(yield* login.current).toEqual({
+      yield* login.record({ checkedAt: "2026-07-18T10:05:00.000Z", windows: [session] });
+      const reading = {
         checkedAt: "2026-07-18T10:05:00.000Z",
         windows: [{ ...event.windows[0], usedPercent: 90 }, event.windows[1]],
-      });
+      };
+      expect(yield* login.current).toEqual(reading);
+      expect(yield* (yield* makeClaudeLoginUsageLimits(file)).current).toEqual(reading);
+    }),
+  );
+
+  it.effect("starts empty from an unreadable file and keeps recording when it cannot save", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      for (const contents of ["not json", '{"checkedAt":1,"windows":[]}']) {
+        const file = path.join(directory, "login.json");
+        yield* fs.writeFileString(file, contents);
+        expect(yield* (yield* makeClaudeLoginUsageLimits(file)).current).toBeUndefined();
+      }
+      const blocker = path.join(directory, "blocker");
+      yield* fs.writeFileString(blocker, "");
+      const unsaved = yield* makeClaudeLoginUsageLimits(path.join(blocker, "login.json"));
+      yield* unsaved.record({ checkedAt, windows: [session] });
+      expect(yield* unsaved.current).toEqual({ checkedAt, windows: [session] });
     }),
   );
 });

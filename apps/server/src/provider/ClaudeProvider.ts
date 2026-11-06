@@ -492,6 +492,17 @@ class ClaudeCapabilitiesProbeSdkError extends Schema.TaggedError<ClaudeCapabilit
 export const claudeSecureStorageDir = (environment: NodeJS.ProcessEnv | undefined) =>
   environment?.CLAUDE_SECURESTORAGE_CONFIG_DIR?.trim() || undefined;
 
+export const claudeCredentialFingerprint = Effect.fn("claudeCredentialFingerprint")(function* (
+  secureStorageDir: string,
+) {
+  return Hex.encode(
+    yield* (yield* Digest.Digest).digest(
+      Digest.sha256,
+      new TextEncoder().encode(`claude-secure-storage\0${secureStorageDir}`),
+    ),
+  );
+});
+
 /** A never-yielding prompt allows local initialization IPC without sending an Anthropic request. */
 const probeClaudeCapabilities = (
   claudeSettings: ClaudeSettings,
@@ -899,12 +910,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   // Claude Code keeps this login here but reports the shared config's account, which is not this login's.
   const secureStorageDir = resolvedEnvironment.CLAUDE_SECURESTORAGE_CONFIG_DIR?.trim();
   const credentialFingerprint = secureStorageDir
-    ? Hex.encode(
-        yield* (yield* Digest.Digest).digest(
-          Digest.sha256,
-          new TextEncoder().encode(`claude-secure-storage\0${secureStorageDir}`),
-        ),
-      )
+    ? yield* claudeCredentialFingerprint(secureStorageDir)
     : undefined;
   // Reset credits read the shared config's token, which belongs to a different login.
   const resetCredits =
