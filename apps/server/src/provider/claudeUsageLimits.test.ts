@@ -1,6 +1,12 @@
+import { it as effectIt } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 import { describe, expect, it } from "vite-plus/test";
 
-import { claudeRateLimitEventToUpdate, claudeUsageResponseToLimits } from "./claudeUsageLimits.ts";
+import {
+  claudeRateLimitEventToUpdate,
+  claudeUsageResponseToLimits,
+  makeClaudeLoginUsageLimits,
+} from "./claudeUsageLimits.ts";
 
 const checkedAt = "2026-07-18T10:00:00.000Z";
 const noNames = { overageIncluded: undefined } as const;
@@ -340,4 +346,35 @@ describe("claudeRateLimitEventToUpdate", () => {
       ],
     });
   });
+});
+
+describe("makeClaudeLoginUsageLimits", () => {
+  effectIt.effect("holds only what live events reported", () =>
+    Effect.gen(function* () {
+      const login = yield* makeClaudeLoginUsageLimits;
+      expect(yield* login.current).toBeUndefined();
+      const event = claudeRateLimitEventToUpdate(
+        {
+          status: "allowed",
+          rateLimitType: "five_hour",
+          ...({
+            unifiedWindows: {
+              five_hour: { utilization: 0.82, resetsAt: 1_793_323_800 },
+              seven_day: { utilization: 0.11, resetsAt: 1_793_881_200 },
+            },
+          } as object),
+        },
+        noNames,
+      )!;
+      yield* login.record({ ...event, checkedAt });
+      yield* login.record({
+        checkedAt: "2026-07-18T10:05:00.000Z",
+        windows: [{ id: "five_hour", kind: "session", label: "Session", usedPercent: 90 }],
+      });
+      expect(yield* login.current).toEqual({
+        checkedAt: "2026-07-18T10:05:00.000Z",
+        windows: [{ ...event.windows[0], usedPercent: 90 }, event.windows[1]],
+      });
+    }),
+  );
 });

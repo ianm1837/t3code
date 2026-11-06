@@ -4848,7 +4848,7 @@ it.layer(
             undefined,
             undefined,
             configLoginCredits,
-            () => Effect.succeed(reading),
+            Effect.succeed(reading),
           );
         const instances = [
           ["claude-max", yield* check("max")],
