@@ -65,6 +65,7 @@ import type { ProviderWorkspaceSnapshot } from "@t3tools/provider-core/server/dr
 import { makeUnavailableUsageLimits } from "@t3tools/provider-core/server/usageLimits";
 import {
   type ClaudeScopedLimitNames,
+  claudeReadingAsOf,
   claudeUsageResponseToLimits,
   recordClaudeUsageResponse,
 } from "./claudeUsageLimits.ts";
@@ -879,9 +880,15 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
       apiKeySource: capabilities.apiKeySource,
     });
   const usageCheckedAt = capabilities.usageCheckedAt ?? checkedAt;
-  const usageLimits = claudeSecureStorageDir(resolvedEnvironment)
-    ? ((loginUsageLimits ? yield* loginUsageLimits : undefined) ??
-      makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" }))
+  const separateLogin = claudeSecureStorageDir(resolvedEnvironment) !== undefined;
+  const loginReading = separateLogin && loginUsageLimits ? yield* loginUsageLimits : undefined;
+  const usageLimits = separateLogin
+    ? (loginReading ??
+      makeUnavailableUsageLimits({
+        checkedAt,
+        reason: "probeFailed",
+        message: "No reading yet. Updates after your next reply on this account.",
+      }))
     : !capabilities.usage
       ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })
       : scopedLimitNames
@@ -930,7 +937,19 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
         ...(capabilities.workspaceId && !credentialFingerprint
           ? { workspaceId: capabilities.workspaceId }
           : {}),
-        ...(authMetadata ? authMetadata : {}),
+        ...(authMetadata
+          ? {
+              ...authMetadata,
+              ...(loginReading
+                ? {
+                    label: `${authMetadata.label} · as of ${claudeReadingAsOf({
+                      checkedAt: loginReading.checkedAt,
+                      now: Date.parse(checkedAt),
+                    })}`,
+                  }
+                : {}),
+            }
+          : {}),
       },
       ...(versionUpgradeMessage ? { message: versionUpgradeMessage } : {}),
       usageLimits: {
