@@ -59,6 +59,27 @@ export const makeClaudeScopedLimitNames = Ref.make<ClaudeScopedLimitNames>({
   overageIncluded: undefined,
 });
 
+export function claudeReadingAsOf({
+  checkedAt,
+  now,
+  timeZone,
+}: {
+  readonly checkedAt: string;
+  readonly now: number;
+  readonly timeZone?: string;
+}): string {
+  const day = new Intl.DateTimeFormat("en-US", { dateStyle: "short", timeZone });
+  const sameDay = day.format(Date.parse(checkedAt)) === day.format(now);
+  return new Intl.DateTimeFormat("en-US", {
+    ...(sameDay ? {} : { month: "short", day: "numeric" }),
+    hour: "numeric",
+    minute: "2-digit",
+    timeZone,
+  })
+    .format(Date.parse(checkedAt))
+    .replace(/\u202f/g, " ");
+}
+
 export const makeClaudeLoginUsageLimits = Effect.map(
   Ref.make<ServerProviderUsageLimits | undefined>(undefined),
   (reading) => ({

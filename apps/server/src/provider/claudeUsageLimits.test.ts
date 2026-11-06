@@ -4,6 +4,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   claudeRateLimitEventToUpdate,
+  claudeReadingAsOf,
   claudeUsageResponseToLimits,
   makeClaudeLoginUsageLimits,
 } from "./claudeUsageLimits.ts";
@@ -377,4 +378,31 @@ describe("makeClaudeLoginUsageLimits", () => {
       });
     }),
   );
+});
+
+describe("claudeReadingAsOf", () => {
+  it("shows the time for a reading from today and adds the date otherwise", () => {
+    const at = (iso: string) => Date.parse(iso);
+    expect(
+      claudeReadingAsOf({
+        checkedAt: "2026-11-05T14:10:00.000Z",
+        now: at("2026-11-05T18:00:00.000Z"),
+        timeZone: "UTC",
+      }),
+    ).toBe("2:10 PM");
+    expect(
+      claudeReadingAsOf({
+        checkedAt: "2026-11-05T14:10:00.000Z",
+        now: at("2026-11-06T09:00:00.000Z"),
+        timeZone: "UTC",
+      }),
+    ).toBe("Nov 5, 2:10 PM");
+    expect(
+      claudeReadingAsOf({
+        checkedAt: "2026-11-05T23:30:00.000Z",
+        now: at("2026-11-06T00:10:00.000Z"),
+        timeZone: "America/New_York",
+      }),
+    ).toBe("6:30 PM");
+  });
 });

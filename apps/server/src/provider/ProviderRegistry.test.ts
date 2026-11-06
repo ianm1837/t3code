@@ -55,6 +55,7 @@ import {
   type CodexAppServerProviderSnapshot,
 } from "./CodexProvider.ts";
 import { BUNDLED_CLAUDE_MODEL_CATALOG } from "./ClaudeModelCatalog.ts";
+import { claudeReadingAsOf } from "./claudeUsageLimits.ts";
 import { checkClaudeProviderStatus, type ClaudeCapabilitiesProbe } from "./ClaudeProvider.ts";
 import * as BackgroundPolicy from "../background/BackgroundPolicy.ts";
 import * as AntigravityInstallation from "./AntigravityInstallation.ts";
@@ -4882,9 +4883,25 @@ it.layer(
             [70, undefined],
           ],
         );
+        const asOf = claudeReadingAsOf({
+          checkedAt: loginReading.checkedAt,
+          now: DateTime.toEpochMillis(yield* DateTime.now),
+        });
+        assert.deepStrictEqual(
+          instances.map(([, draft]) => draft.auth.label),
+          [
+            "Claude Max Subscription",
+            `Claude Pro Subscription · as of ${asOf}`,
+            `Claude Pro Subscription · as of ${asOf}`,
+          ],
+        );
         const unread = yield* check("pro", separateStorage);
+        assert.strictEqual(unread.auth.label, "Claude Pro Subscription");
         assert.deepStrictEqual(unread.usageLimits?.windows, []);
-        assert.strictEqual(unread.usageLimits?.unavailable?.reason, "probeFailed");
+        assert.deepStrictEqual(unread.usageLimits?.unavailable, {
+          reason: "probeFailed",
+          message: "No reading yet. Updates after your next reply on this account.",
+        });
       }).pipe(
         Effect.provide(
           layerMockSpawner((args) => {
