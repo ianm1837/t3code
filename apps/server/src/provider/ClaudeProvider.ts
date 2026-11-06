@@ -683,9 +683,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   /** Shared with the adapter so turn events reuse the scoped-bucket names this probe saw. */
   scopedLimitNames?: Ref.Ref<ClaudeScopedLimitNames>,
   resolveResetCredits?: (version: string) => Effect.Effect<ServerProviderResetCredits | undefined>,
-  resolveLoginUsageLimits?: (
-    version: string | null,
-  ) => Effect.Effect<ServerProviderUsageLimits | undefined>,
+  loginUsageLimits?: Effect.Effect<ServerProviderUsageLimits | undefined>,
 ): Effect.fn.Return<
   ServerProviderDraft,
   never,
@@ -882,7 +880,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
     });
   const usageCheckedAt = capabilities.usageCheckedAt ?? checkedAt;
   const usageLimits = claudeSecureStorageDir(resolvedEnvironment)
-    ? ((resolveLoginUsageLimits ? yield* resolveLoginUsageLimits(parsedVersion) : undefined) ??
+    ? ((loginUsageLimits ? yield* loginUsageLimits : undefined) ??
       makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" }))
     : !capabilities.usage
       ? makeUnavailableUsageLimits({ checkedAt, reason: "probeFailed" })

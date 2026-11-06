@@ -850,6 +850,65 @@ describe("ProviderInstanceRegistry — multi-instance codex slice", () => {
       }),
   );
 
+  it.live.skipIf(windowsHost)(
+    "never asks the usage endpoint for a Claude login kept outside its config dir",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const fixtures = yield* makeTildeProviderFixtures();
+        const storageDir = path.join(fixtures.claudeHomePath, "login");
+        yield* fs.makeDirectory(storageDir);
+        for (const directory of [fixtures.claudeHomePath, storageDir]) {
+          yield* fs.writeFileString(
+            path.join(directory, ".credentials.json"),
+            '{"claudeAiOauth":{"accessToken":"fake-token"}}',
+          );
+        }
+        const usageRequests: Array<string> = [];
+        const client = HttpClient.make((request) => {
+          if (request.url.endsWith("/api/oauth/usage")) usageRequests.push(request.url);
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              Response.json({ version: "0.0.0", five_hour: { utilization: 55, resets_at: null } }),
+            ),
+          );
+        });
+        const instanceId = ProviderInstanceId.make("claude_secure_storage");
+        const { registry } = yield* makeProviderInstanceRegistry({
+          drivers: [ClaudeDriver],
+          configMap: {
+            [instanceId]: {
+              driver: ProviderDriverKind.make("claudeAgent"),
+              enabled: true,
+              environment: [
+                { name: "CLAUDE_SECURESTORAGE_CONFIG_DIR", value: storageDir, sensitive: false },
+              ],
+              config: makeClaudeConfig({
+                enabled: true,
+                binaryPath: fixtures.claudeBinaryPath,
+                homePath: fixtures.claudeHomePath,
+              }),
+            },
+          },
+        }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+        const instance = yield* registry.getInstance(instanceId);
+
+        const refreshed = yield* instance!.snapshot.refresh;
+        expect(usageRequests).toEqual([]);
+        expect(refreshed.status).toBe("ready");
+        expect(refreshed.usageLimits).toMatchObject({
+          windows: [],
+          unavailable: { reason: "probeFailed" },
+        });
+
+        yield* instance!.snapshot.refreshUsage!;
+        expect(usageRequests).toEqual([]);
+        expect((yield* instance!.snapshot.getSnapshot).usageLimits).toEqual(refreshed.usageLimits);
+      }).pipe(Effect.provideService(HostProcess.Platform, "linux"), Effect.provide(layerTest)),
+  );
+
   const makeClaudeCacheFixture = Effect.fnUntraced(function* (
     state: "ready" | "signed-out" | "usage-failed",
   ) {

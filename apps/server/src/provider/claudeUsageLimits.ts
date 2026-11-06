@@ -11,6 +11,7 @@ import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 
 import {
+  applyUsageLimitsUpdate,
   clampPercent,
   makeUnavailableUsageLimits,
   makeUsageLimits,
@@ -57,6 +58,21 @@ export interface ClaudeScopedLimitNames {
 export const makeClaudeScopedLimitNames = Ref.make<ClaudeScopedLimitNames>({
   overageIncluded: undefined,
 });
+
+export const makeClaudeLoginUsageLimits = Effect.map(
+  Ref.make<ServerProviderUsageLimits | undefined>(undefined),
+  (reading) => ({
+    record: (update: ProviderUsageLimitsUpdate & { readonly checkedAt: string }) =>
+      Ref.update(reading, (previous) =>
+        applyUsageLimitsUpdate({
+          previous: previous ?? makeUsageLimits({ checkedAt: update.checkedAt, windows: [] }),
+          update,
+          checkedAt: update.checkedAt,
+        }),
+      ),
+    current: Ref.get(reading),
+  }),
+);
 
 const SCOPED_WINDOW_PREFIX = "seven_day_";
 const scopeToken = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "_");

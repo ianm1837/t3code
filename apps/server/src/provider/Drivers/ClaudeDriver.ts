@@ -30,7 +30,11 @@ import {
 } from "../../orchestration-v2/Adapters/ClaudeAdapterV2.ts";
 import { ProviderDriverError } from "../Errors.ts";
 import { claudeUsageReader } from "./claudeUsage.ts";
-import { makeClaudeScopedLimitNames, recordClaudeUsageResponse } from "../claudeUsageLimits.ts";
+import {
+  makeClaudeLoginUsageLimits,
+  makeClaudeScopedLimitNames,
+  recordClaudeUsageResponse,
+} from "../claudeUsageLimits.ts";
 import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
@@ -186,12 +190,8 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     // Retain reports until the registry subscribes; end its listener on teardown.
     const workspaceRescans = yield* Queue.unbounded<string, Cause.Done>();
     yield* Effect.addFinalizer(() => Queue.end(workspaceRescans));
-    const secureStorageDir = claudeSecureStorageDir(processEnv);
-    const loginUsage = secureStorageDir
-      ? yield* ClaudeResetCredits.makeClaudeLoginUsage({
-          configDir: secureStorageDir,
-          scopedLimitNames,
-        })
+    const loginUsage = claudeSecureStorageDir(processEnv)
+      ? yield* makeClaudeLoginUsageLimits
       : undefined;
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {
@@ -310,15 +310,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
                   Effect.provideService(FileSystem.FileSystem, fileSystem),
                   Effect.provideService(Path.Path, path),
                 ),
-              loginUsage &&
-                ((version) =>
-                  loginUsage
-                    .read(version)
-                    .pipe(
-                      Effect.provideService(HttpClient.HttpClient, httpClient),
-                      Effect.provideService(FileSystem.FileSystem, fileSystem),
-                      Effect.provideService(Path.Path, path),
-                    )),
+              loginUsage?.current,
             ),
           ),
           Effect.tap((provider) =>
@@ -339,7 +331,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
 
     let readCurrentSnapshot: Effect.Effect<ServerProvider | undefined> = Effect.undefined;
     const checkUsageLimits = Effect.gen(function* () {
-      if (!effectiveConfig.enabled) return undefined;
+      if (!effectiveConfig.enabled || loginUsage) return undefined;
       const current = yield* readCurrentSnapshot;
       const version = current?.version ?? undefined;
       const checkedAt = DateTime.formatIso(yield* DateTime.now);
@@ -524,9 +516,7 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
       displayName,
       accentColor,
       enabled,
-      snapshot: loginUsage
-        ? { ...snapshot, refresh: loginUsage.requestRefresh.pipe(Effect.andThen(snapshot.refresh)) }
-        : snapshot,
+      snapshot,
       invalidateCaches: Cache.invalidateAll(capabilitiesProbeCache),
       workspaceRescans: Stream.fromQueue(workspaceRescans),
       // Unreadable settings report no limit; the thread's own notice covers a refused mode.
