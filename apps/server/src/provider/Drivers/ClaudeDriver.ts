@@ -39,6 +39,7 @@ import * as ClaudeResetCredits from "../claudeResetCredits.ts";
 import * as ResetCreditCoordinator from "../resetCreditCoordinator.ts";
 import {
   checkClaudeProviderStatus,
+  claudeCredentialFingerprint,
   claudeSecureStorageDir,
   makePendingClaudeProvider,
   probeClaudeCapabilities,
@@ -190,8 +191,15 @@ export const ClaudeDriver: ProviderDriver<ClaudeSettings, ClaudeDriverEnv, Path.
     // Retain reports until the registry subscribes; end its listener on teardown.
     const workspaceRescans = yield* Queue.unbounded<string, Cause.Done>();
     yield* Effect.addFinalizer(() => Queue.end(workspaceRescans));
-    const loginUsage = claudeSecureStorageDir(processEnv)
-      ? yield* makeClaudeLoginUsageLimits
+    const secureStorageDir = claudeSecureStorageDir(processEnv);
+    const loginUsage = secureStorageDir
+      ? yield* makeClaudeLoginUsageLimits(
+          path.join(
+            stateDir,
+            "claude-login-usage",
+            `${yield* claudeCredentialFingerprint(secureStorageDir)}.json`,
+          ),
+        )
       : undefined;
     const orchestrationAdapter = yield* createClaudeAdapterV2(
       {

@@ -1,14 +1,18 @@
 import type { SDKControlGetUsageResponse, SDKRateLimitInfo } from "@anthropic-ai/claude-agent-sdk";
-import type {
-  ProviderUsageLimitsUpdate,
+import {
+  type ProviderUsageLimitsUpdate,
   ServerProviderUsageLimits,
-  ServerProviderUsageWindow,
+  type ServerProviderUsageWindow,
 } from "@t3tools/contracts";
+import { writeFileStringAtomically } from "@t3tools/shared/atomicWrite";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
+import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
+import * as SynchronizedRef from "effect/SynchronizedRef";
 
 import {
   applyUsageLimitsUpdate,
@@ -80,20 +84,45 @@ export function claudeReadingAsOf({
     .replace(/\u202f/g, " ");
 }
 
-export const makeClaudeLoginUsageLimits = Effect.map(
-  Ref.make<ServerProviderUsageLimits | undefined>(undefined),
-  (reading) => ({
+const decodeStoredUsageLimits = Schema.decodeEffect(
+  Schema.fromJsonString(ServerProviderUsageLimits),
+);
+const encodeStoredUsageLimits = Schema.encodeEffect(
+  Schema.fromJsonString(ServerProviderUsageLimits),
+);
+
+export const makeClaudeLoginUsageLimits = Effect.fn("makeClaudeLoginUsageLimits")(function* (
+  file: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const stored = yield* fs.readFileString(file).pipe(
+    Effect.flatMap(decodeStoredUsageLimits),
+    Effect.orElseSucceed(() => undefined),
+  );
+  const reading = yield* SynchronizedRef.make<ServerProviderUsageLimits | undefined>(stored);
+  const save = (limits: ServerProviderUsageLimits) =>
+    encodeStoredUsageLimits(limits).pipe(
+      Effect.flatMap((contents) => writeFileStringAtomically({ filePath: file, contents })),
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.ignore({ log: true }),
+    );
+  return {
     record: (update: ProviderUsageLimitsUpdate & { readonly checkedAt: string }) =>
-      Ref.update(reading, (previous) =>
-        applyUsageLimitsUpdate({
+      SynchronizedRef.updateEffect(reading, (previous) => {
+        const next = applyUsageLimitsUpdate({
           previous: previous ?? makeUsageLimits({ checkedAt: update.checkedAt, windows: [] }),
           update,
           checkedAt: update.checkedAt,
-        }),
-      ),
-    current: Ref.get(reading),
-  }),
-);
+        });
+        return next === undefined || next === previous
+          ? Effect.succeed(next)
+          : save(next).pipe(Effect.as(next));
+      }),
+    current: SynchronizedRef.get(reading),
+  };
+});
 
 const SCOPED_WINDOW_PREFIX = "seven_day_";
 const scopeToken = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, "_");
