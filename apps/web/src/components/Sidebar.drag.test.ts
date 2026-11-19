@@ -377,7 +377,7 @@ describe("sidebar drag projection", () => {
     expect(result.get("s")?.y).toBe(32);
   });
 
-  it("keeps a visible pinned shelf header at its measured height while dragging", () => {
+  it("keeps a visible pinned shelf header and separator at their measured heights while dragging", () => {
     const items = [
       pinnedHeader,
       thread("p", "pinned"),
@@ -394,11 +394,17 @@ describe("sidebar drag projection", () => {
       boundaryLabelHeight: 16,
     });
     const args = layout(items, "a2", "a1");
-    const rects = args.rects.map((rect, index) =>
-      index === 0
-        ? { ...rect, height: 32, bottom: rect.top + 32 }
-        : { ...rect, top: rect.top + 32, bottom: rect.bottom + 32 },
-    );
+    const measured = new Map([
+      [0, 32],
+      [2, 12],
+    ]);
+    let top = args.rects[0]!.top;
+    const rects = args.rects.map((rect, index) => {
+      const height = measured.get(index) ?? rect.height;
+      const next = { ...rect, top, height, bottom: top + height };
+      top += height + 1;
+      return next;
+    });
     const result = new Map(
       items.map((item, index) => [
         sidebarListItemId(item),
@@ -408,8 +414,8 @@ describe("sidebar drag projection", () => {
     expect(result.get(sidebarMarkerId("pinned-header"))).toEqual(stationary);
     expect(result.get("p")?.y).toBe(0);
     expect(result.get(sidebarMarkerId("pinned-divider"))?.y).toBe(0);
-    expect(result.get("a1")?.y).toBe(16 + 83);
-    expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(16);
+    expect(result.get("a1")?.y).toBe(16 - 12 + 83);
+    expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(16 - 12);
   });
 
   it.each(["s1", "missing-target"])(
