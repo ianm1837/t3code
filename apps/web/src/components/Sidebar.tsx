@@ -3612,6 +3612,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                                 label={gt("Active", { $context: "sidebar section" })}
                                 visible={from !== null}
                                 isDropTarget={dragTargetSection === "active"}
+                                separator={pinnedThreads.length > 0}
                               />,
                             );
                             break;
