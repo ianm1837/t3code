@@ -316,13 +316,18 @@ describe("search lists ranked matches", () => {
   it("lists matches by rank across shelves, then threads listed for their messages", () => {
     const layout = buildThreadListV2Items({
       threads: [
-        makeThread({ id: ThreadId.make("notes"), title: "Deploy notes" }),
+        makeThread({
+          id: ThreadId.make("notes"),
+          title: "Deploy notes",
+          pinnedAt: "2026-06-01T12:00:00.000Z",
+        }),
         makeThread({ id: ThreadId.make("mentioned"), title: "Weekly notes" }),
         makeThread({ id: ThreadId.make("exact"), title: "Deploy", settledOverride: "settled" }),
       ],
       environmentId: null,
       searchQuery: "deploy",
       matchedThreadKeys: new Set([matchKey("mentioned"), matchKey("notes")]),
+      pinnedShelfExpanded: false,
       settledShelfExpanded: false,
       now: NOW,
     });
@@ -333,6 +338,8 @@ describe("search lists ranked matches", () => {
       ["mentioned", "card"],
     ]);
     expect([...layout.contentOnlyThreadKeys]).toEqual([matchKey("mentioned")]);
+    expect(layout.items[1]?.pinned).toBe(true);
+    expect(layout.pinnedShelfHeaderIndex).toBeNull();
   });
 });
 
@@ -453,11 +460,14 @@ describe("buildThreadListV2Items", () => {
     const whileSnoozed = buildThreadListV2Items({ ...snoozedInput, now: NOW });
     expect(whileSnoozed.items.map((item) => item.thread.id)).toEqual(["active"]);
     expect(whileSnoozed.snoozedCount).toBe(1);
+    expect(whileSnoozed.pinnedShelfHeaderIndex).toBeNull();
 
     const afterWake = buildThreadListV2Items({ ...snoozedInput, now: "2026-06-03T10:00:00.000Z" });
     expect(afterWake.items.map((item) => item.thread.id)).toEqual(["pinned-snoozed", "active"]);
     expect(afterWake.items[0]?.pinned).toBe(true);
     expect(afterWake.snoozedCount).toBe(0);
+    expect(afterWake.pinnedShelfHeaderIndex).toBe(0);
+    expect(afterWake.pinnedCount).toBe(1);
   });
 
   it("builds snoozed rows between active and settled when the shelf is expanded", () => {
@@ -501,8 +511,18 @@ describe("buildThreadListV2Items", () => {
   });
 
   it("keeps the selected thread on a collapsed shelf", () => {
-    const layout = buildThreadListV2Items({
+    const input = {
       threads: [
+        makeThread({
+          id: ThreadId.make("pinned-open"),
+          title: "Pinned open",
+          pinnedAt: "2026-06-01T12:00:00.000Z",
+        }),
+        makeThread({
+          id: ThreadId.make("pinned-other"),
+          title: "Pinned other",
+          pinnedAt: "2026-06-01T11:00:00.000Z",
+        }),
         makeThread({
           id: ThreadId.make("open"),
           title: "Open",
@@ -519,12 +539,22 @@ describe("buildThreadListV2Items", () => {
       environmentId: null,
       searchQuery: "",
       now: NOW,
-      selectedThreadKey: `${environmentId}:open`,
-    });
+      pinnedShelfExpanded: false,
+    };
+    const layout = buildThreadListV2Items({ ...input, selectedThreadKey: `${environmentId}:open` });
 
     expect(layout.items.map((item) => item.thread.id)).toEqual(["open"]);
     expect(layout.items[0]?.snoozed).toBe(true);
     expect(layout.snoozedCount).toBe(2);
+    expect(layout.pinnedCount).toBe(2);
+    expect(layout.pinnedShelfHeaderIndex).toBe(0);
+
+    const pinnedOpen = buildThreadListV2Items({
+      ...input,
+      selectedThreadKey: `${environmentId}:pinned-open`,
+    });
+    expect(pinnedOpen.items.map((item) => item.thread.id)).toEqual(["pinned-open"]);
+    expect(pinnedOpen.snoozedShelfHeaderIndex).toBe(1);
   });
 
   it("keeps snoozed threads visible on environments without the snooze capability", () => {
@@ -900,9 +930,14 @@ describe("buildThreadListV2ListItems", () => {
     ).toEqual([true, true, true, false, null, false]);
   });
 
-  it("places queued tasks above active rows and a collapsed snoozed shelf", () => {
+  it("places queued tasks above collapsed pinned rows, active rows and a collapsed snoozed shelf", () => {
     const snoozedLayout = buildThreadListV2Items({
       threads: [
+        makeThread({
+          id: ThreadId.make("pinned"),
+          title: "pinned",
+          pinnedAt: "2026-06-01T12:00:00.000Z",
+        }),
         makeThread({ id: ThreadId.make("active"), title: "active" }),
         makeThread({
           id: ThreadId.make("snoozed"),
@@ -920,10 +955,14 @@ describe("buildThreadListV2ListItems", () => {
       environmentId: null,
       searchQuery: "",
       now: NOW,
+      pinnedShelfExpanded: false,
     });
     const items = buildThreadListV2ListItems({
       items: snoozedLayout.items,
       pendingTasks: [makePendingTask("queued")],
+      pinnedCount: snoozedLayout.pinnedCount,
+      pinnedShelfExpanded: false,
+      pinnedShelfHeaderIndex: snoozedLayout.pinnedShelfHeaderIndex,
       snoozedCount: snoozedLayout.snoozedCount,
       snoozedShelfExpanded: false,
       snoozedShelfHeaderIndex: snoozedLayout.snoozedShelfHeaderIndex,
@@ -933,11 +972,14 @@ describe("buildThreadListV2ListItems", () => {
 
     expect(items.map((item) => item.type)).toEqual([
       "v2-pending",
+      "v2-pinned-shelf",
+      "v2-active-section",
       "v2-thread",
       "v2-snoozed-shelf",
       "v2-settled-shelf",
       "v2-thread",
     ]);
+    expect(items[1]).toMatchObject({ type: "v2-pinned-shelf", count: 1, expanded: false });
     expect(threadJumpTarget(items, "thread.jump.1")).toMatchObject({
       type: "v2-pending",
       pendingTask: { key: "pending-task:queued" },
@@ -1808,6 +1850,11 @@ describe("Working section beta", () => {
   it("places the shelf after queued tasks and before snoozed and settled threads", () => {
     const layout = buildThreadListV2Items({
       threads: [
+        makeThread({
+          id: ThreadId.make("pinned"),
+          title: "pinned",
+          pinnedAt: "2026-06-01T12:00:00.000Z",
+        }),
         makeThread({ id: ThreadId.make("active"), title: "active" }),
         makeThread({ id: ThreadId.make("working"), title: "working", runtime: running }),
         makeThread({
@@ -1834,6 +1881,8 @@ describe("Working section beta", () => {
     const items = buildThreadListV2ListItems({
       items: layout.items,
       pendingTasks: [makePendingTask("queued")],
+      pinnedCount: layout.pinnedCount,
+      pinnedShelfHeaderIndex: layout.pinnedShelfHeaderIndex,
       workingCount: layout.workingCount,
       workingShelfExpanded: true,
       workingShelfHeaderIndex: layout.workingShelfHeaderIndex,
@@ -1853,6 +1902,9 @@ describe("Working section beta", () => {
       ),
     ).toEqual([
       "queued",
+      "v2-pinned-shelf",
+      "pinned",
+      "v2-active-section",
       "active",
       "v2-working-shelf",
       "working",
