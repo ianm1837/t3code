@@ -349,6 +349,7 @@ const SETTLED_TAIL_INITIAL_COUNT = 10;
 const SETTLED_TAIL_PAGE_COUNT = 25;
 const REVEAL_ROW_CLASS_NAME =
   "flex h-9 w-full cursor-pointer items-center gap-2.5 rounded-md px-2.5 text-left text-sm text-sidebar-muted-foreground hover:bg-sidebar-row-hover hover:text-sidebar-foreground aria-disabled:cursor-default";
+const PINNED_SHELF_EXPANDED_KEY = "t3code:sidebar:pinned-expanded";
 const SETTLED_SHELF_EXPANDED_KEY = "t3code:sidebar:settled-expanded";
 const SNOOZED_SHELF_EXPANDED_KEY = "t3code:sidebar:snoozed-expanded";
 const WORKING_SHELF_EXPANDED_KEY = "t3code:sidebar:working-expanded";
@@ -472,6 +473,11 @@ function useSidebarThreads(input: {
   const nowMinute = useNowMinute();
   // Minute-quantized clocks would delay second-precise snooze wakes by up to a minute.
   const snoozeWakeClock = useSnoozeWakeClock(threads);
+  const [pinnedShelfExpanded, setPinnedShelfExpanded] = useLocalStorage(
+    PINNED_SHELF_EXPANDED_KEY,
+    true,
+    Schema.Boolean,
+  );
   const [settledShelfExpanded, setSettledShelfExpanded] = useLocalStorage(
     SETTLED_SHELF_EXPANDED_KEY,
     false,
@@ -541,6 +547,9 @@ function useSidebarThreads(input: {
   const renderedSettledThreads = settledShelfExpanded
     ? visibleSettledThreads
     : routeThreadOnly(visibleSettledThreads, shelfRouteThreadKey);
+  const visiblePinnedThreads = pinnedShelfExpanded
+    ? pinnedThreads
+    : routeThreadOnly(pinnedThreads, shelfRouteThreadKey);
   const visibleSnoozedThreads = snoozedShelfExpanded
     ? snoozedThreads
     : routeThreadOnly(snoozedThreads, shelfRouteThreadKey);
@@ -575,7 +584,7 @@ function useSidebarThreads(input: {
           };
         });
   const orderedThreads = [
-    ...pinnedThreads,
+    ...visiblePinnedThreads,
     ...(projectFolders === null
       ? activeThreads
       : projectFolders.flatMap((folder) => folder.threads)),
@@ -613,6 +622,8 @@ function useSidebarThreads(input: {
         scopeKey: current.scopeKey,
         count: current.count + SETTLED_TAIL_PAGE_COUNT,
       })),
+    pinnedShelfExpanded,
+    togglePinnedShelf: () => setPinnedShelfExpanded((value) => !value),
     settledShelfExpanded,
     toggleSettledShelf: () => setSettledShelfExpanded((value) => !value),
     snoozedShelfExpanded,
@@ -631,6 +642,7 @@ function useSidebarThreads(input: {
         return next;
       }),
     renderedSettledThreads,
+    visiblePinnedThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
     orderedThreadKeys: orderedThreads.map(threadShellKey),
@@ -638,7 +650,7 @@ function useSidebarThreads(input: {
     settledThreadKeys: new Set(settledThreads.map(threadShellKey)),
     snoozedThreadKeys: new Set(snoozedThreads.map(threadShellKey)),
     sectionByThreadKey,
-    pinnedKeys: pinnedThreads.map(threadShellKey),
+    pinnedKeys: visiblePinnedThreads.map(threadShellKey),
     activeKeys: activeThreads.map(threadShellKey),
     pinnedKeysById: new Map(
       threads.map((thread) => [threadShellKey(thread), thread.pinOrderKey ?? null] as const),
@@ -1369,6 +1381,8 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     olderSettledShelf,
     hiddenSettledCount,
     showMoreSettled,
+    pinnedShelfExpanded,
+    togglePinnedShelf,
     settledShelfExpanded,
     toggleSettledShelf,
     snoozedShelfExpanded,
@@ -1379,6 +1393,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     toggleProjectFolder,
     toggleProjectFolderShowAll,
     renderedSettledThreads,
+    visiblePinnedThreads,
     visibleSnoozedThreads,
     visibleWorkingThreads,
     orderedThreadKeys,
@@ -1997,8 +2012,11 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     if (list && header) {
       const listRect = list.getBoundingClientRect();
       const scale = list.offsetWidth > 0 ? listRect.width / list.offsetWidth : 1;
+      const headerRect = header.getBoundingClientRect();
       dragLabelOffsetRef.current =
-        header.getBoundingClientRect().top - listRect.top + SIDEBAR_DRAG_LABEL_HEIGHT * scale;
+        headerRect.top -
+        listRect.top +
+        Math.max(headerRect.height, SIDEBAR_DRAG_LABEL_HEIGHT * scale);
     } else {
       dragLabelOffsetRef.current = 0;
     }
@@ -2035,7 +2053,7 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
       return [];
     }
     const items: SidebarListItem[] = [{ kind: "marker", marker: "pinned-header" }];
-    const pinnedRows = rowsOf(pinnedThreads, "pinned");
+    const pinnedRows = rowsOf(visiblePinnedThreads, "pinned");
     items.push(...pinnedRows);
     items.push({ kind: "marker", marker: "pinned-divider" });
     const activeRows = rowsOf(activeThreads, "active");
@@ -2093,9 +2111,12 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
     dragState === null && sidebarListItems.length + visibleDraftSessionCount > 0;
   // Cache on both fields so layout-key changes trigger the effect even when animate is unchanged.
   const listMotionPass = { layoutKey: listMotionLayoutKey, animate: listMotionAnimate };
-  const shelfExpansionKey = [workingShelfExpanded, snoozedShelfExpanded, settledShelfExpanded].join(
-    ":",
-  );
+  const shelfExpansionKey = [
+    pinnedShelfExpanded,
+    workingShelfExpanded,
+    snoozedShelfExpanded,
+    settledShelfExpanded,
+  ].join(":");
   const previousShelfExpansionKeyRef = useRef(shelfExpansionKey);
   // oxlint-disable-next-line t3code/no-unreasoned-state-sync -- records moved rows and updates list motion after each layout-affecting commit
   useLayoutEffect(() => {
@@ -3568,7 +3589,10 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                           variant={rowVariant}
                           navigationParent={
                             folderRow ??
-                            (section === "working" || section === "snoozed" || section === "settled"
+                            (section === "pinned" ||
+                            section === "working" ||
+                            section === "snoozed" ||
+                            section === "settled"
                               ? `shelf:${section}`
                               : undefined)
                           }
@@ -3719,13 +3743,28 @@ export default function Sidebar({ routeReveal }: { routeReveal: SidebarRouteReve
                       switch (item.marker) {
                         case "pinned-header":
                           items.push(
-                            <SidebarDragBoundary
-                              key="pinned-header"
-                              marker="pinned-header"
-                              label={gt("Pinned", { $context: "sidebar section" })}
-                              visible={from !== null}
-                              isDropTarget={dragTargetSection === "pinned"}
-                            />,
+                            pinnedThreads.length > 0 ? (
+                              <SidebarSectionHeader
+                                key="pinned-header"
+                                marker="pinned-header"
+                                label={gt("Pinned", { $context: "sidebar section" })}
+                                count={pinnedThreads.length}
+                                dragging={from !== null}
+                                isDropTarget={dragTargetSection === "pinned"}
+                                toggle={{
+                                  expanded: pinnedShelfExpanded,
+                                  onToggle: togglePinnedShelf,
+                                }}
+                              />
+                            ) : (
+                              <SidebarDragBoundary
+                                key="pinned-header"
+                                marker="pinned-header"
+                                label={gt("Pinned", { $context: "sidebar section" })}
+                                visible={from !== null}
+                                isDropTarget={dragTargetSection === "pinned"}
+                              />
+                            ),
                           );
                           break;
                         case "pinned-divider":
