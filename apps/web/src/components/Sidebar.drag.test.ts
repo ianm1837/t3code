@@ -377,6 +377,41 @@ describe("sidebar drag projection", () => {
     expect(result.get("s")?.y).toBe(32);
   });
 
+  it("keeps a visible pinned shelf header at its measured height while dragging", () => {
+    const items = [
+      pinnedHeader,
+      thread("p", "pinned"),
+      divider,
+      thread("a1", "active"),
+      thread("a2", "active"),
+      settledHeader,
+      thread("s", "settled"),
+    ];
+    const strategy = createSidebarSortingStrategy({
+      items,
+      settledOrder: [],
+      settledExpanded: true,
+      boundaryLabelHeight: 16,
+    });
+    const args = layout(items, "a2", "a1");
+    const rects = args.rects.map((rect, index) =>
+      index === 0
+        ? { ...rect, height: 32, bottom: rect.top + 32 }
+        : { ...rect, top: rect.top + 32, bottom: rect.bottom + 32 },
+    );
+    const result = new Map(
+      items.map((item, index) => [
+        sidebarListItemId(item),
+        strategy({ ...args, rects, activeNodeRect: rects[args.activeIndex]!, index }),
+      ]),
+    );
+    expect(result.get(sidebarMarkerId("pinned-header"))).toEqual(stationary);
+    expect(result.get("p")?.y).toBe(0);
+    expect(result.get(sidebarMarkerId("pinned-divider"))?.y).toBe(0);
+    expect(result.get("a1")?.y).toBe(16 + 83);
+    expect(result.get(sidebarMarkerId("settled-header"))?.y).toBe(16);
+  });
+
   it.each(["s1", "missing-target"])(
     "keeps label clearance when a settled drag is over %s",
     (over) => {

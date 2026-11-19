@@ -199,14 +199,15 @@ export function createSidebarSortingStrategy(input: {
           ? cardHeight
           : slimHeight;
       const moved = item.kind === "thread" && item.key === active.key;
-      return item.kind === "marker" &&
-        (item.marker === "pinned-header" || item.marker === "pinned-divider")
-        ? labelHeight
-        : item.kind === "marker" && item.marker.endsWith("placeholder")
-          ? slimHeight
-          : moved
-            ? fallback
-            : (rect?.height ?? fallback);
+      return item.kind === "marker" && item.marker === "pinned-header"
+        ? Math.max(labelHeight, rect?.height ?? 0)
+        : item.kind === "marker" && item.marker === "pinned-divider"
+          ? labelHeight
+          : item.kind === "marker" && item.marker.endsWith("placeholder")
+            ? slimHeight
+            : moved
+              ? fallback
+              : (rect?.height ?? fallback);
     });
     const firstShelf = items.findIndex(isShelfHeader);
     const shelfRect = rects[firstShelf];
