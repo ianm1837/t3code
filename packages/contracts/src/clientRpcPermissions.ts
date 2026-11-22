@@ -36,6 +36,7 @@ export const CLIENT_GUARDED_RPC_SCOPES = {
   [WS_METHODS.serverRefreshProviders]: AuthOrchestrationReadScope,
   [WS_METHODS.pushRegisterDevice]: AuthOrchestrationReadScope,
   [WS_METHODS.pushUnregisterDevice]: AuthOrchestrationReadScope,
+  [WS_METHODS.pushSetThreadNotificationLevel]: AuthOrchestrationOperateScope,
   [WS_METHODS.pullRequestsRunAction]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsUpdate]: AuthSourceControlWriteScope,
   [WS_METHODS.pullRequestsComment]: AuthSourceControlWriteScope,

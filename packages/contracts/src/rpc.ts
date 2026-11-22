@@ -374,6 +374,8 @@ import {
   PushDeviceRegistration,
   PushDeviceRegistryError,
   PushDeviceUnregisterInput,
+  PushThreadNotificationLevelEntry,
+  PushThreadNotificationLevelList,
 } from "./pushDevices.ts";
 import {
   ServerConfigStreamEvent,
@@ -598,6 +600,8 @@ export const WS_METHODS = {
 
   pushRegisterDevice: "push.registerDevice",
   pushUnregisterDevice: "push.unregisterDevice",
+  pushListThreadNotificationLevels: "push.listThreadNotificationLevels",
+  pushSetThreadNotificationLevel: "push.setThreadNotificationLevel",
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -2151,6 +2155,21 @@ const WsPushUnregisterDeviceRpc = Rpc.make(WS_METHODS.pushUnregisterDevice, {
   error: Schema.Union([PushDeviceRegistryError, EnvironmentAuthorizationError]),
 });
 
+const WsPushListThreadNotificationLevelsRpc = Rpc.make(
+  WS_METHODS.pushListThreadNotificationLevels,
+  {
+    payload: Schema.Struct({}),
+    success: PushThreadNotificationLevelList,
+    error: Schema.Union([PushDeviceRegistryError, EnvironmentAuthorizationError]),
+  },
+);
+
+const WsPushSetThreadNotificationLevelRpc = Rpc.make(WS_METHODS.pushSetThreadNotificationLevel, {
+  payload: PushThreadNotificationLevelEntry,
+  success: Schema.Void,
+  error: Schema.Union([PushDeviceRegistryError, EnvironmentAuthorizationError]),
+});
+
 const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   payload: Schema.Struct({}),
   success: DeviceServiceState,
@@ -2760,6 +2779,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsDeviceActionRpc,
   WsPushRegisterDeviceRpc,
   WsPushUnregisterDeviceRpc,
+  WsPushListThreadNotificationLevelsRpc,
+  WsPushSetThreadNotificationLevelRpc,
   WsSubscribeDeviceStateRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
