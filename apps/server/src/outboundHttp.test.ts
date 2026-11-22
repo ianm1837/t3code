@@ -17,6 +17,7 @@ import {
   ignoreMacosTypeOfServiceEinval,
   installHttp1FetchDispatcher,
 } from "./outboundHttp.ts";
+import { makeApnsTransport } from "./push/ApnsTransport.ts";
 
 // Non-secret, self-signed 127.0.0.1 certificate, valid until 2126; ALPN h2 requires TLS.
 const TEST_KEY = `-----BEGIN PRIVATE KEY-----
@@ -39,11 +40,43 @@ A+Ke/q0rNPya3fjQa9O5B+kCIQC1SfmdNaFcNJ4JINlus4FfrRnfKiADS2MIJR9f
 -----END CERTIFICATE-----
 `;
 
+const apnsRequests: Array<{
+  readonly httpVersion: string;
+  readonly path: string;
+  readonly topic: string | undefined;
+  readonly body: string;
+}> = [];
+
 const server = NodeHttp2.createSecureServer(
   { allowHTTP1: true, key: TEST_KEY, cert: TEST_CERT },
-  (request, response) => response.end(request.httpVersion),
+  (request, response) => {
+    if (!request.url.startsWith("/3/device/")) {
+      response.end(request.httpVersion);
+      return;
+    }
+    let body = "";
+    request.setEncoding("utf8");
+    request.on("data", (chunk: string) => {
+      body += chunk;
+    });
+    request.on("end", () => {
+      const topic = request.headers["apns-topic"];
+      apnsRequests.push({
+        httpVersion: request.httpVersion,
+        path: request.url,
+        topic: typeof topic === "string" ? topic : undefined,
+        body,
+      });
+      response.writeHead(400, { "apns-id": "apns-id-1", "content-type": "application/json" });
+      response.end('{"reason":"BadDeviceToken"}');
+    });
+  },
 );
 let origin = "";
+let sessionCount = 0;
+server.on("session", () => {
+  sessionCount += 1;
+});
 const defaultCaCertificates = NodeTls.getCACertificates("default");
 const defaultDispatcher = Undici.getGlobalDispatcher();
 const defaultAttemptTimeout = NodeNet.getDefaultAutoSelectFamilyAttemptTimeout();
@@ -94,6 +127,47 @@ describe("installHttp1FetchDispatcher", () => {
         installHttp1FetchDispatcher();
         expect(yield* versionViaBuiltinFetch()).toBe("1.1");
       }),
+  );
+});
+
+describe("makeApnsTransport", () => {
+  it.effect("posts over HTTP/2 while fetch stays on HTTP/1.1", () =>
+    Effect.gen(function* () {
+      installHttp1FetchDispatcher();
+      const transport = yield* makeApnsTransport({ originFor: () => origin });
+      const sessionsBefore = sessionCount;
+      const post = {
+        environment: "sandbox",
+        path: `/3/device/${"a".repeat(64)}`,
+        headers: { "apns-topic": "com.example.app" },
+        body: '{"aps":{}}',
+      } as const;
+      const first = yield* transport.post(post);
+      const second = yield* transport.post(post);
+
+      expect(first).toEqual({
+        status: 400,
+        apnsId: "apns-id-1",
+        body: '{"reason":"BadDeviceToken"}',
+      });
+      expect(second).toEqual(first);
+      expect(sessionCount - sessionsBefore).toBe(1);
+      expect(apnsRequests).toEqual([
+        {
+          httpVersion: "2.0",
+          path: post.path,
+          topic: "com.example.app",
+          body: post.body,
+        },
+        {
+          httpVersion: "2.0",
+          path: post.path,
+          topic: "com.example.app",
+          body: post.body,
+        },
+      ]);
+      expect(yield* Effect.promise(versionViaGlobalDispatcher)).toBe("1.1");
+    }).pipe(Effect.scoped),
   );
 });
 
