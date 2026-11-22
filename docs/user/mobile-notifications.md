@@ -33,3 +33,7 @@ An iOS app you build under your own Apple Developer team receives alerts straigh
 3. In the app, turn on **Device Notifications** in **Settings → Notifications**. Each connected environment shows **Ready** once it can send alerts to this device.
 
 An environment shows **Server has no APNs key** until step 2 is done on it. Turning the switch off, or removing a connected environment from the app, stops its alerts.
+
+Under **Alerts**, choose which kinds this device receives: **Finished**, **Failed**, **Needs approval** and **Needs input**. Each device keeps its own choice.
+
+To change alerts for one thread on every device, touch and hold the thread in the list and choose **More → Notifications**. **All** follows each device's alert choices, **Needs me** sends only approvals and input requests, and **Off** sends nothing for that thread. `t3 push status` on the environment lists each device's alert kinds and the threads not set to **All**.
