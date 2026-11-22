@@ -370,6 +370,12 @@ import {
   DeviceShutdownInput,
 } from "./device.ts";
 import {
+  PushDeviceRegisterResult,
+  PushDeviceRegistration,
+  PushDeviceRegistryError,
+  PushDeviceUnregisterInput,
+} from "./pushDevices.ts";
+import {
   ServerConfigStreamEvent,
   DesktopUpdateCommitInput,
   OtlpEndpointCheckInput,
@@ -589,6 +595,9 @@ export const WS_METHODS = {
   deviceShutdown: "device.shutdown",
   deviceDetail: "device.detail",
   deviceAction: "device.action",
+
+  pushRegisterDevice: "push.registerDevice",
+  pushUnregisterDevice: "push.unregisterDevice",
 
   serverProbe: "server.probe",
   serverGetConfig: "server.getConfig",
@@ -2130,6 +2139,18 @@ const WsDeviceActionRpc = Rpc.make(WS_METHODS.deviceAction, {
   error: Schema.Union([DeviceError, EnvironmentAuthorizationError]),
 });
 
+const WsPushRegisterDeviceRpc = Rpc.make(WS_METHODS.pushRegisterDevice, {
+  payload: PushDeviceRegistration,
+  success: PushDeviceRegisterResult,
+  error: Schema.Union([PushDeviceRegistryError, EnvironmentAuthorizationError]),
+});
+
+const WsPushUnregisterDeviceRpc = Rpc.make(WS_METHODS.pushUnregisterDevice, {
+  payload: PushDeviceUnregisterInput,
+  success: Schema.Void,
+  error: Schema.Union([PushDeviceRegistryError, EnvironmentAuthorizationError]),
+});
+
 const WsSubscribeDeviceStateRpc = Rpc.make(WS_METHODS.subscribeDeviceState, {
   payload: Schema.Struct({}),
   success: DeviceServiceState,
@@ -2737,6 +2758,8 @@ export const WsRpcGroup = RpcGroup.make(
   WsDeviceShutdownRpc,
   WsDeviceDetailRpc,
   WsDeviceActionRpc,
+  WsPushRegisterDeviceRpc,
+  WsPushUnregisterDeviceRpc,
   WsSubscribeDeviceStateRpc,
   WsSubscribeServerConfigRpc,
   WsSubscribeServerLifecycleRpc,
