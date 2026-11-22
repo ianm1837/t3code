@@ -3,9 +3,15 @@ import type { RelayDeviceRegistrationRequest } from "@t3tools/contracts/relay";
 import type { Preferences } from "../../persistence/mobile-preferences";
 import { supportsAgentAwarenessPush } from "./capabilities";
 
-// Development builds use sandbox APNs; distribution builds use production APNs.
-export function resolveApsEnvironment(appVariant: unknown): "sandbox" | "production" {
-  return appVariant === "development" ? "sandbox" : "production";
+export function resolveApsEnvironment(extra: unknown): "sandbox" | "production" {
+  if (typeof extra !== "object" || extra === null) {
+    return "production";
+  }
+  const apsEnvironment = "apsEnvironment" in extra ? extra.apsEnvironment : undefined;
+  if (apsEnvironment === "sandbox" || apsEnvironment === "production") {
+    return apsEnvironment;
+  }
+  return "appVariant" in extra && extra.appVariant === "development" ? "sandbox" : "production";
 }
 
 export function makeRelayDeviceRegistrationRequest(

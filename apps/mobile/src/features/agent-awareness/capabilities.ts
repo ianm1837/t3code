@@ -2,8 +2,19 @@ import Constants from "expo-constants";
 import { Platform } from "react-native";
 import { supportsAndroidAgentNotifications } from "./androidNotifications";
 
+export type AgentAwarenessPushMode = "relay" | "direct" | "none";
+
+export function agentAwarenessPushMode(): AgentAwarenessPushMode {
+  const extra = Constants.expoConfig?.extra;
+  const mode = extra?.push?.mode;
+  if (mode === "relay" || mode === "direct" || mode === "none") {
+    return mode;
+  }
+  return extra?.iosPersonalTeamBuild === true ? "none" : "relay";
+}
+
 export function supportsAgentAwarenessPush() {
   return Platform.OS === "android"
     ? supportsAndroidAgentNotifications()
-    : Platform.OS === "ios" && Constants.expoConfig?.extra?.iosPersonalTeamBuild !== true;
+    : Platform.OS === "ios" && agentAwarenessPushMode() === "relay";
 }

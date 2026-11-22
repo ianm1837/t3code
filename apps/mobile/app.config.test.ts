@@ -6,7 +6,12 @@ import assetLinks from "../web/public/.well-known/assetlinks.json";
 
 // Keep config parsing independent of local env files and build credentials.
 vi.mock("../../scripts/lib/public-config.ts", () => ({
-  loadRepoEnv: () => ({ APP_VARIANT: process.env.APP_VARIANT }),
+  loadRepoEnv: () =>
+    Object.fromEntries(
+      ["APP_VARIANT", "T3CODE_IOS_BUNDLE_ID", "T3CODE_IOS_TEAM_ID", "T3CODE_IOS_APS_ENVIRONMENT"]
+        .map((name) => [name, process.env[name]])
+        .filter(([, value]) => value !== undefined),
+    ),
 }));
 
 afterEach(() => {
@@ -44,4 +49,29 @@ it.each([
     { scheme: "https", host, pathPrefix: "/threads/" },
   ]);
   expect(assetLinks.map((link) => link.target.package_name)).toContain(identifier);
+});
+
+it("signs an own-identity build with its team and direct push", async () => {
+  vi.stubEnv("T3CODE_IOS_BUNDLE_ID", "com.example.t3code");
+  vi.stubEnv("T3CODE_IOS_TEAM_ID", "ABCDE12345");
+  const config = await loadConfig("production");
+  const plugins = new Map(
+    (config.plugins ?? []).map((plugin) =>
+      typeof plugin === "string" ? [plugin, undefined] : [plugin[0], plugin[1]],
+    ),
+  );
+  expect(config.ios?.bundleIdentifier).toBe("com.example.t3code");
+  expect(config.ios?.appleTeamId).toBe("ABCDE12345");
+  expect(config.ios?.associatedDomains).toBeUndefined();
+  expect(plugins.get("expo-notifications")).toMatchObject({ mode: "development" });
+  expect(plugins.get("@clerk/expo")).toMatchObject({ appleSignIn: false });
+  expect(plugins.get("expo-widgets")).toMatchObject({
+    bundleIdentifier: "com.example.t3code.widgets",
+    groupIdentifier: "group.com.example.t3code",
+  });
+  expect(plugins.get("expo-sharing")).toMatchObject({
+    ios: { enabled: true, extensionBundleIdentifier: "com.example.t3code.sharing" },
+  });
+  expect(config.extra?.apsEnvironment).toBe("sandbox");
+  expect(config.extra?.push).toEqual({ mode: "direct" });
 });

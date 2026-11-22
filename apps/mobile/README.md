@@ -107,6 +107,25 @@ T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID=com.example.t3code \
 vp run ios:release
 ```
 
+With a paid Apple Developer team, build under your own bundle identifier and team instead. This
+build keeps the widget and share extensions and the push entitlement. It leaves out T3's associated
+domains and native Sign in with Apple, and it receives alerts straight from your environments
+through APNs instead of T3 Connect. See
+[self-built iOS app](../../docs/user/mobile-notifications.md#self-built-ios-app) for the server side.
+
+```bash
+T3CODE_IOS_BUNDLE_ID=com.example.t3code \
+T3CODE_IOS_TEAM_ID=ABCDE12345 \
+vp run ios:release
+```
+
+The push entitlement defaults to `development`, which matches a development-signed build. Set
+`T3CODE_IOS_APS_ENVIRONMENT=production` for an ad hoc or App Store build. Xcode must register the
+app identifiers, app group and push capability for your team once. `expo run:ios` does not allow
+that when every target already has a team, so if signing fails, run the first build with
+`xcodebuild -workspace ios/T3Code.xcworkspace -scheme T3Code -configuration Release -destination "id=<device>" -allowProvisioningUpdates -allowProvisioningDeviceRegistration build`
+from `apps/mobile`.
+
 Build and run the local iOS preview app:
 
 ```bash

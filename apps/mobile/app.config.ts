@@ -4,6 +4,7 @@ import { BRAND_ASSET_PATHS } from "../../scripts/lib/brand-assets.ts";
 import { loadRepoEnv } from "../../scripts/lib/public-config.ts";
 
 type AppVariant = "development" | "preview" | "production";
+type ApsEntitlement = "development" | "production";
 
 const repoEnv = loadRepoEnv();
 Object.assign(process.env, repoEnv);
@@ -37,6 +38,58 @@ if (
     "T3CODE_IOS_PERSONAL_TEAM_BUNDLE_ID must be a reverse-DNS identifier such as com.example.t3code when T3CODE_IOS_PERSONAL_TEAM=1.",
   );
 }
+
+const IOS_TEAM_ID_PATTERN = /^[A-Z0-9]{10}$/;
+
+function resolveIosOwnIdentity({
+  bundleId,
+  teamId,
+}: {
+  readonly bundleId: string | undefined;
+  readonly teamId: string | undefined;
+}): { readonly bundleId: string; readonly teamId: string } | null {
+  const trimmedBundleId = bundleId?.trim() ?? "";
+  const trimmedTeamId = teamId?.trim() ?? "";
+  if (trimmedBundleId === "" && trimmedTeamId === "") {
+    return null;
+  }
+  if (isIosPersonalTeamBuild) {
+    throw new Error(
+      "T3CODE_IOS_BUNDLE_ID and T3CODE_IOS_TEAM_ID cannot be combined with T3CODE_IOS_PERSONAL_TEAM=1.",
+    );
+  }
+  if (!IOS_BUNDLE_IDENTIFIER_PATTERN.test(trimmedBundleId)) {
+    throw new Error(
+      "T3CODE_IOS_BUNDLE_ID must be a reverse-DNS identifier such as com.example.t3code when T3CODE_IOS_TEAM_ID is set.",
+    );
+  }
+  if (!IOS_TEAM_ID_PATTERN.test(trimmedTeamId)) {
+    throw new Error(
+      "T3CODE_IOS_TEAM_ID must be a 10-character Apple team ID when T3CODE_IOS_BUNDLE_ID is set.",
+    );
+  }
+  return { bundleId: trimmedBundleId, teamId: trimmedTeamId };
+}
+
+function parseApsEntitlement(value: string | undefined): ApsEntitlement | null {
+  const trimmed = value?.trim() ?? "";
+  if (trimmed === "") {
+    return null;
+  }
+  if (trimmed === "development" || trimmed === "production") {
+    return trimmed;
+  }
+  throw new Error("T3CODE_IOS_APS_ENVIRONMENT must be development or production.");
+}
+
+const iosOwnIdentity = resolveIosOwnIdentity({
+  bundleId: repoEnv.T3CODE_IOS_BUNDLE_ID,
+  teamId: repoEnv.T3CODE_IOS_TEAM_ID,
+});
+const apsEntitlement: ApsEntitlement =
+  parseApsEntitlement(repoEnv.T3CODE_IOS_APS_ENVIRONMENT) ??
+  (iosOwnIdentity !== null || APP_VARIANT === "development" ? "development" : "production");
+const pushMode = iosOwnIdentity !== null ? "direct" : isIosPersonalTeamBuild ? "none" : "relay";
 
 const DEVELOPMENT_ASSETS = {
   appIcon: fromRepoRoot(BRAND_ASSET_PATHS.developmentIosIconPng),
@@ -122,7 +175,7 @@ const variant = VARIANT_CONFIG[APP_VARIANT];
 const HOSTED_APP_HOST = "app.t3.codes";
 const iosBundleIdentifier = isIosPersonalTeamBuild
   ? personalTeamBundleIdentifier!
-  : variant.iosBundleIdentifier;
+  : (iosOwnIdentity?.bundleId ?? variant.iosBundleIdentifier);
 
 const dmSansFonts = {
   regular: "@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.ttf",
@@ -264,12 +317,16 @@ const config: ExpoConfig = {
     requireFullScreen: process.env.T3_SHOWCASE_CAPTURE_BUILD === "1",
     bundleIdentifier: iosBundleIdentifier,
     // Avoid Personal Team fallback: it cannot sign App Groups, Apple sign-in or push entitlements.
-    appleTeamId: "ARK85ZXQ4Z",
-    associatedDomains: [
-      `applinks:${variant.relyingParty}`,
-      `webcredentials:${variant.relyingParty}`,
-      `applinks:${HOSTED_APP_HOST}`,
-    ],
+    appleTeamId: iosOwnIdentity?.teamId ?? "ARK85ZXQ4Z",
+    ...(iosOwnIdentity === null
+      ? {
+          associatedDomains: [
+            `applinks:${variant.relyingParty}`,
+            `webcredentials:${variant.relyingParty}`,
+            `applinks:${HOSTED_APP_HOST}`,
+          ],
+        }
+      : {}),
     entitlements: {
       "keychain-access-groups": [`$(AppIdentifierPrefix)${variant.iosBundleIdentifier}`],
     },
@@ -388,11 +445,17 @@ const config: ExpoConfig = {
       {
         icon: variant.assets.androidNotificationIcon,
         color: variant.assets.androidNotificationColor,
-        mode: APP_VARIANT === "development" ? "development" : "production",
+        mode: apsEntitlement,
       },
     ],
     // Gate Clerk here: withoutIosPersonalTeamCapabilities runs too early to strip its entitlement.
-    ["@clerk/expo", { theme: "./clerk-theme.json", appleSignIn: !isIosPersonalTeamBuild }],
+    [
+      "@clerk/expo",
+      {
+        theme: "./clerk-theme.json",
+        appleSignIn: !isIosPersonalTeamBuild && iosOwnIdentity === null,
+      },
+    ],
     "expo-web-browser",
     [
       "expo-quick-actions",
@@ -493,6 +556,10 @@ const config: ExpoConfig = {
   extra: {
     appVariant: APP_VARIANT,
     iosPersonalTeamBuild: isIosPersonalTeamBuild,
+    apsEnvironment: apsEntitlement === "development" ? "sandbox" : "production",
+    push: {
+      mode: pushMode,
+    },
     relay: {
       url: repoEnv.T3CODE_RELAY_URL ?? null,
     },
