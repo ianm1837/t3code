@@ -1,9 +1,14 @@
 import {
   ApnsDeviceToken,
   AuthSessionId,
+  PushAlertPreferences,
   type PushDeviceRegisterResult,
   type PushDeviceRegistration,
   PushDeviceRegistryError,
+  PushThreadNotificationLevel,
+  type PushThreadNotificationLevelEntry,
+  type PushThreadNotificationLevelList,
+  ThreadId,
   TrimmedNonEmptyString,
 } from "@t3tools/contracts";
 import { RelayApnsEnvironment } from "@t3tools/contracts/relay";
@@ -28,14 +33,20 @@ const PushDeviceRecord = Schema.Struct({
   apsEnvironment: RelayApnsEnvironment,
   label: TrimmedNonEmptyString,
   appVersion: Schema.optional(TrimmedNonEmptyString),
+  preferences: Schema.optional(PushAlertPreferences),
   sessionId: AuthSessionId,
   updatedAt: Schema.String,
 });
 export type PushDeviceRecord = typeof PushDeviceRecord.Type;
 
-const PushDeviceFileJson = Schema.fromJsonString(
-  Schema.Struct({ devices: Schema.Array(PushDeviceRecord) }),
-);
+const PushDeviceFile = Schema.Struct({
+  devices: Schema.Array(PushDeviceRecord),
+  threadLevels: Schema.optional(Schema.Record(Schema.String, PushThreadNotificationLevel)),
+});
+type PushDeviceFile = typeof PushDeviceFile.Type;
+const EMPTY_FILE: PushDeviceFile = { devices: [] };
+
+const PushDeviceFileJson = Schema.fromJsonString(PushDeviceFile);
 const decodePushDeviceFile = Schema.decodeUnknownEffect(PushDeviceFileJson);
 const encodePushDeviceFile = Schema.encodeEffect(PushDeviceFileJson);
 
@@ -60,6 +71,16 @@ export class PushDeviceRegistry extends Context.Service<
       ReadonlyArray<PushDeviceRecord & { readonly sessionActive: boolean }>,
       PushDeviceRegistryError
     >;
+    readonly threadLevel: (input: {
+      readonly threadId: ThreadId;
+    }) => Effect.Effect<PushThreadNotificationLevel, PushDeviceRegistryError>;
+    readonly setThreadLevel: (
+      input: PushThreadNotificationLevelEntry,
+    ) => Effect.Effect<void, PushDeviceRegistryError>;
+    readonly listThreadLevels: Effect.Effect<
+      PushThreadNotificationLevelList,
+      PushDeviceRegistryError
+    >;
   }
 >()("t3/push/PushDeviceRegistry") {}
 
@@ -70,17 +91,30 @@ const make = Effect.gen(function* () {
 
   const registryError = (cause: unknown) => new PushDeviceRegistryError({ cause });
 
-  const readDevices = Effect.gen(function* () {
+  const readFile = Effect.gen(function* () {
     const bytes = yield* secrets.get(PUSH_DEVICES_SECRET);
-    if (Option.isNone(bytes)) return [];
-    const file = yield* decodePushDeviceFile(new TextDecoder().decode(bytes.value));
-    return file.devices;
+    if (Option.isNone(bytes)) return EMPTY_FILE;
+    return yield* decodePushDeviceFile(new TextDecoder().decode(bytes.value));
   }).pipe(Effect.mapError(registryError));
 
-  const writeDevices = (devices: ReadonlyArray<PushDeviceRecord>) =>
-    encodePushDeviceFile({ devices }).pipe(
+  const readDevices = Effect.map(readFile, (file) => file.devices);
+
+  const writeFile = (file: PushDeviceFile) =>
+    encodePushDeviceFile(file).pipe(
       Effect.flatMap((json) => secrets.set(PUSH_DEVICES_SECRET, new TextEncoder().encode(json))),
       Effect.mapError(registryError),
+    );
+
+  const updateFile = <A>(
+    change: (file: PushDeviceFile) => { readonly file: PushDeviceFile; readonly result: A },
+  ) =>
+    lock.withPermits(1)(
+      Effect.gen(function* () {
+        const file = yield* readFile;
+        const next = change(file);
+        if (next.file !== file) yield* writeFile(next.file);
+        return next.result;
+      }),
     );
 
   const update = <A>(
@@ -89,14 +123,13 @@ const make = Effect.gen(function* () {
       readonly result: A;
     },
   ) =>
-    lock.withPermits(1)(
-      Effect.gen(function* () {
-        const devices = yield* readDevices;
-        const next = change(devices);
-        if (next.devices !== devices) yield* writeDevices(next.devices);
-        return next.result;
-      }),
-    );
+    updateFile((file) => {
+      const next = change(file.devices);
+      return {
+        file: next.devices === file.devices ? file : { ...file, devices: next.devices },
+        result: next.result,
+      };
+    });
 
   const activeSessionIds = sessions.listActive().pipe(
     Effect.map((active) => new Set<string>(active.map((session) => session.sessionId))),
@@ -169,7 +202,53 @@ const make = Effect.gen(function* () {
     return devices.map((device) => ({ ...device, sessionActive: active.has(device.sessionId) }));
   }).pipe(Effect.withSpan("PushDeviceRegistry.list"));
 
-  return PushDeviceRegistry.of({ register, unregister, listDeliverable, removeTokens, list });
+  const threadLevel: PushDeviceRegistry["Service"]["threadLevel"] = Effect.fn(
+    "PushDeviceRegistry.threadLevel",
+  )(function* (input) {
+    const file = yield* readFile;
+    return file.threadLevels?.[input.threadId] ?? "all";
+  });
+
+  const setThreadLevel: PushDeviceRegistry["Service"]["setThreadLevel"] = Effect.fn(
+    "PushDeviceRegistry.setThreadLevel",
+  )(function* (input) {
+    yield* updateFile((file) => {
+      const current = file.threadLevels?.[input.threadId] ?? "all";
+      if (current === input.level) return { file, result: undefined };
+      const others = Object.fromEntries(
+        Object.entries(file.threadLevels ?? {}).filter(([threadId]) => threadId !== input.threadId),
+      );
+      return {
+        file: {
+          ...file,
+          threadLevels:
+            input.level === "all" ? others : { ...others, [input.threadId]: input.level },
+        },
+        result: undefined,
+      };
+    });
+  });
+
+  const listThreadLevels: PushDeviceRegistry["Service"]["listThreadLevels"] = readFile.pipe(
+    Effect.map((file) => ({
+      threads: Object.entries(file.threadLevels ?? {}).map(([threadId, level]) => ({
+        threadId: ThreadId.make(threadId),
+        level,
+      })),
+    })),
+    Effect.withSpan("PushDeviceRegistry.listThreadLevels"),
+  );
+
+  return PushDeviceRegistry.of({
+    register,
+    unregister,
+    listDeliverable,
+    removeTokens,
+    list,
+    threadLevel,
+    setThreadLevel,
+    listThreadLevels,
+  });
 });
 
 export const layer = Layer.effect(PushDeviceRegistry, make);

@@ -1,3 +1,4 @@
+import type { PushAlertPreferences } from "@t3tools/contracts";
 import * as Console from "effect/Console";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -137,14 +138,28 @@ const pushKeyCommand = Command.make("key").pipe(
 
 const tokenSuffix = (token: string) => `…${token.slice(-8)}`;
 
+const ALERT_KIND_NAMES = [
+  ["notifyOnCompletion", "finished"],
+  ["notifyOnFailure", "failed"],
+  ["notifyOnApproval", "approval"],
+  ["notifyOnInput", "input"],
+] as const;
+
+const alertKinds = (preferences: PushAlertPreferences | undefined) =>
+  ALERT_KIND_NAMES.filter(([field]) => preferences?.[field] ?? true).map(([, name]) => name);
+
 const pushStatusCommand = Command.make("status", { ...projectLocationFlags, json: jsonFlag }).pipe(
-  Command.withDescription("Show the installed APNs key and the iOS devices registered for alerts."),
+  Command.withDescription(
+    "Show the installed APNs key, the iOS devices registered for alerts, and thread alert levels.",
+  ),
   Command.withHandler((flags) =>
     Effect.gen(function* () {
       const { layerDevices } = yield* runtimeLayer({ flags, quietLogs: flags.json });
       yield* Effect.gen(function* () {
         const key = yield* readProviderKey.pipe(Effect.result);
-        const devices = yield* (yield* PushDeviceRegistry.PushDeviceRegistry).list;
+        const registry = yield* PushDeviceRegistry.PushDeviceRegistry;
+        const devices = yield* registry.list;
+        const { threads } = yield* registry.listThreadLevels;
         if (flags.json) {
           const json = yield* encodeStatusJson({
             key:
@@ -167,7 +182,9 @@ const pushStatusCommand = Command.make("status", { ...projectLocationFlags, json
               appVersion: device.appVersion ?? null,
               sessionActive: device.sessionActive,
               updatedAt: device.updatedAt,
+              alerts: alertKinds(device.preferences),
             })),
+            threads,
           });
           yield* Console.log(`${json}\n`);
           return;
@@ -186,10 +203,17 @@ const pushStatusCommand = Command.make("status", { ...projectLocationFlags, json
                 "Devices:",
                 ...devices.map(
                   (device) =>
-                    `  ${device.label} (${device.deviceId}) token ${tokenSuffix(device.token)}, ${device.apsEnvironment}, ${device.topic}, session ${device.sessionActive ? "active" : "ended"}, updated ${device.updatedAt}`,
+                    `  ${device.label} (${device.deviceId}) token ${tokenSuffix(device.token)}, ${device.apsEnvironment}, ${device.topic}, session ${device.sessionActive ? "active" : "ended"}, updated ${device.updatedAt}, alerts ${alertKinds(device.preferences).join(" ") || "none"}`,
                 ),
               ];
-        yield* Console.log(`${[keyLine, ...deviceLines].join("\n")}\n`);
+        const threadLines =
+          threads.length === 0
+            ? ["Thread levels: every thread is at all."]
+            : [
+                "Thread levels:",
+                ...threads.map((thread) => `  ${thread.threadId}: ${thread.level}`),
+              ];
+        yield* Console.log(`${[keyLine, ...deviceLines, ...threadLines].join("\n")}\n`);
       }).pipe(Effect.provide(layerDevices));
     }),
   ),

@@ -271,6 +271,8 @@ const RPC_AGGREGATES = {
   [WS_METHODS.deviceAction]: "device",
   [WS_METHODS.pushRegisterDevice]: "push",
   [WS_METHODS.pushUnregisterDevice]: "push",
+  [WS_METHODS.pushListThreadNotificationLevels]: "push",
+  [WS_METHODS.pushSetThreadNotificationLevel]: "push",
   [WS_METHODS.subscribeDeviceState]: "device",
   [WS_METHODS.subscribeServerConfig]: "server",
   [WS_METHODS.subscribeServerLifecycle]: "server",

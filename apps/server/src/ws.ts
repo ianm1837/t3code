@@ -3538,6 +3538,8 @@ export const layerWsRpc = (
           pushDevices.register({ registration: input, sessionId: currentSessionId }),
         [WS_METHODS.pushUnregisterDevice]: (input) =>
           pushDevices.unregister(input).pipe(Effect.asVoid),
+        [WS_METHODS.pushListThreadNotificationLevels]: (_input) => pushDevices.listThreadLevels,
+        [WS_METHODS.pushSetThreadNotificationLevel]: (input) => pushDevices.setThreadLevel(input),
         [WS_METHODS.subscribeDeviceState]: (_input) => DeviceService.stateStream(deviceService),
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>

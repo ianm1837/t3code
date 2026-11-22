@@ -1,6 +1,12 @@
 import * as NodeCrypto from "@effect/platform-node/NodeCrypto";
 import { assert, describe, it } from "@effect/vitest";
-import { AuthSessionId, EnvironmentId, ThreadId, type AuthClientSession } from "@t3tools/contracts";
+import {
+  AuthSessionId,
+  EnvironmentId,
+  ThreadId,
+  type AuthClientSession,
+  type PushAlertPreferences,
+} from "@t3tools/contracts";
 import type { RelayAgentActivityState } from "@t3tools/contracts/relay";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
@@ -30,6 +36,12 @@ const SESSION_B = AuthSessionId.make("session-b");
 const TOKEN_A = "a".repeat(64);
 const TOKEN_B = "b".repeat(64);
 const TOKEN_C = "c".repeat(64);
+const NO_COMPLETION: PushAlertPreferences = {
+  notifyOnCompletion: false,
+  notifyOnFailure: true,
+  notifyOnApproval: true,
+  notifyOnInput: true,
+};
 
 function activityState(overrides: Partial<RelayAgentActivityState> = {}): RelayAgentActivityState {
   return {
@@ -114,6 +126,7 @@ const makeHarness = Effect.fnUntraced(function* (input: {
     readonly deviceId: string;
     readonly token: string;
     readonly sessionId: AuthSessionId;
+    readonly preferences?: PushAlertPreferences;
   }) =>
     registry.register({
       registration: {
@@ -122,6 +135,9 @@ const makeHarness = Effect.fnUntraced(function* (input: {
         topic: "com.example.app",
         apsEnvironment: "sandbox",
         label: `Phone ${registration.deviceId}`,
+        ...(registration.preferences === undefined
+          ? {}
+          : { preferences: registration.preferences }),
       },
       sessionId: registration.sessionId,
     });
@@ -189,6 +205,41 @@ describe("AgentActivityPush APNs sink", () => {
   );
 
   it.effect.each([
+    { level: "all", phase: "completed", sent: ["a"] },
+    { level: "all", phase: "waiting_for_approval", sent: ["a", "b"] },
+    { level: "needs-me", phase: "completed", sent: [] },
+    { level: "needs-me", phase: "waiting_for_input", sent: ["a", "b"] },
+    { level: "off", phase: "waiting_for_approval", sent: [] },
+  ] as const)(
+    "sends $phase in a thread at $level only to devices that allow it",
+    ({ level, phase, sent }) =>
+      Effect.gen(function* () {
+        const harness = yield* makeHarness({ respond: okResponse });
+        yield* harness.register({ deviceId: "device-a", token: TOKEN_A, sessionId: SESSION_A });
+        yield* harness.register({
+          deviceId: "device-b",
+          token: TOKEN_B,
+          sessionId: SESSION_B,
+          preferences: NO_COMPLETION,
+        });
+        yield* harness.registry.setThreadLevel({ threadId: ThreadId.make("thread-1"), level });
+        assert.deepStrictEqual(
+          yield* harness.registry.listThreadLevels,
+          level === "all"
+            ? { threads: [] }
+            : { threads: [{ threadId: ThreadId.make("thread-1"), level }] },
+        );
+
+        yield* harness.publish(activityState({ phase }));
+
+        assert.deepStrictEqual(
+          harness.requests.map((request) => request.path.slice(-1)).toSorted(),
+          [...sent],
+        );
+      }),
+  );
+
+  it.effect.each([
     { status: 410, reason: "Unregistered", removed: true, retried: false },
     { status: 400, reason: "BadDeviceToken", removed: true, retried: false },
     { status: 400, reason: "DeviceTokenNotForTopic", removed: true, retried: false },
@@ -251,11 +302,24 @@ describe("AgentActivityPush APNs sink", () => {
         ["device-a"],
       );
 
-      yield* harness.register({ deviceId: "device-a", token: TOKEN_C, sessionId: SESSION_A });
+      yield* harness.register({
+        deviceId: "device-a",
+        token: TOKEN_C,
+        sessionId: SESSION_A,
+        preferences: NO_COMPLETION,
+      });
+      assert.deepStrictEqual(
+        (yield* harness.registry.list).map((device) => [device.deviceId, device.preferences]),
+        [["device-a", NO_COMPLETION]],
+      );
       yield* harness.register({ deviceId: "device-d", token: TOKEN_C, sessionId: SESSION_A });
       assert.deepStrictEqual(
-        (yield* harness.registry.list).map((device) => [device.deviceId, device.token]),
-        [["device-d", TOKEN_C]],
+        (yield* harness.registry.list).map((device) => [
+          device.deviceId,
+          device.token,
+          device.preferences,
+        ]),
+        [["device-d", TOKEN_C, undefined]],
       );
     }),
   );

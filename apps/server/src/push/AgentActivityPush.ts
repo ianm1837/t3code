@@ -1,4 +1,8 @@
-import type { ThreadId } from "@t3tools/contracts";
+import type {
+  PushAlertPreferences,
+  PushThreadNotificationLevel,
+  ThreadId,
+} from "@t3tools/contracts";
 import type {
   RelayAgentActivityState,
   RelayAgentAwarenessPreferences,
@@ -28,14 +32,30 @@ import {
 import * as ApnsSender from "./ApnsSender.ts";
 import * as PushDeviceRegistry from "./PushDeviceRegistry.ts";
 
-const DIRECT_PUSH_PREFERENCES: RelayAgentAwarenessPreferences = {
-  liveActivitiesEnabled: false,
-  notificationsEnabled: true,
-  notifyOnApproval: true,
-  notifyOnInput: true,
+const ALL_ALERTS: PushAlertPreferences = {
   notifyOnCompletion: true,
   notifyOnFailure: true,
+  notifyOnApproval: true,
+  notifyOnInput: true,
 };
+
+function directPushPreferences({
+  device,
+  level,
+}: {
+  readonly device: { readonly preferences?: PushAlertPreferences | undefined };
+  readonly level: PushThreadNotificationLevel;
+}): RelayAgentAwarenessPreferences {
+  const alerts = device.preferences ?? ALL_ALERTS;
+  return {
+    liveActivitiesEnabled: false,
+    notificationsEnabled: level !== "off",
+    notifyOnApproval: alerts.notifyOnApproval,
+    notifyOnInput: alerts.notifyOnInput,
+    notifyOnCompletion: level === "all" && alerts.notifyOnCompletion,
+    notifyOnFailure: level === "all" && alerts.notifyOnFailure,
+  };
+}
 
 export class ApnsDeliveryRetryableError extends Schema.TaggedError<ApnsDeliveryRetryableError>()(
   "ApnsDeliveryRetryableError",
@@ -92,23 +112,22 @@ export const makeApnsSink = Effect.gen(function* () {
     }
     const previous = settledByThread.get(input.threadId);
     settledByThread.delete(input.threadId);
-    if (
-      state === null ||
-      isExpiredAgentActivityState({ state, nowMs }) ||
-      !shouldAlertForActivity({
+    if (state === null || isExpiredAgentActivityState({ state, nowMs })) return;
+    const alerts = (preferences: RelayAgentAwarenessPreferences) =>
+      shouldAlertForActivity({
         phase: state.phase,
         updatedAt: state.updatedAt,
-        preferences: DIRECT_PUSH_PREFERENCES,
+        preferences,
         nowMs,
-      })
-    ) {
-      return;
-    }
+      });
+    if (!alerts(directPushPreferences({ device: {}, level: "all" }))) return;
+    const level = yield* registry.threadLevel({ threadId: input.threadId });
     const settledTokens =
       previous?.state.updatedAt === state.updatedAt ? previous.tokens : new Set<string>();
     const notification = notificationForActivity({ ...state, status: statusForPhase(state.phase) });
     const devices = (yield* registry.listDeliverable).filter(
-      (device) => !settledTokens.has(device.token),
+      (device) =>
+        !settledTokens.has(device.token) && alerts(directPushPreferences({ device, level })),
     );
     if (devices.length === 0) return;
     const results = yield* Effect.forEach(

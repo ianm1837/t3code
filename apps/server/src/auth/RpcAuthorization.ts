@@ -98,6 +98,7 @@ export const RPC_REQUIRED_SCOPES = {
   [WS_METHODS.serverGetStorageCleanupReport]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetDatabaseStorage]: AuthOrchestrationReadScope,
   [WS_METHODS.serverGetSettings]: AuthOrchestrationReadScope,
+  [WS_METHODS.pushListThreadNotificationLevels]: AuthOrchestrationReadScope,
   [WS_METHODS.peerLinksList]: AuthAccessReadScope,
   // Names only, so a client that reads threads can open a linked environment's.
   [WS_METHODS.peerLinksNames]: AuthOrchestrationReadScope,
