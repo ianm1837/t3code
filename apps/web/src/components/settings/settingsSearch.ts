@@ -409,9 +409,9 @@ export const SETTINGS_SEARCH_ITEMS = [
   },
   {
     id: "timeline-minimap",
-    title: "Timeline minimap",
+    title: msg("Timeline minimap"),
     to: "/settings/appearance",
-    searchTerms: ["message navigation jump scroll turns marks outline hide"],
+    searchTerms: [msg("message navigation jump scroll turns marks outline hide")],
   },
   {
     id: "math-rendering",

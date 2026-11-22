@@ -385,11 +385,13 @@ export function AppearanceSettingsPanel() {
         />
         <SettingsRow
           {...searchableSetting("timeline-minimap")}
-          description="Show a mark beside the chat for each of your messages, to preview or jump back to any of them."
+          description={gt(
+            "Show a mark beside the chat for each of your messages, to preview or jump back to any of them.",
+          )}
           resetAction={
             settings.timelineMinimapEnabled !== DEFAULT_UNIFIED_SETTINGS.timelineMinimapEnabled ? (
               <SettingResetButton
-                label="timeline minimap"
+                ariaLabel={gt("Reset timeline minimap to default")}
                 onClick={() =>
                   updateSettings({
                     timelineMinimapEnabled: DEFAULT_UNIFIED_SETTINGS.timelineMinimapEnabled,
@@ -404,7 +406,7 @@ export function AppearanceSettingsPanel() {
               onCheckedChange={(checked) =>
                 updateSettings({ timelineMinimapEnabled: Boolean(checked) })
               }
-              aria-label="Show timeline minimap"
+              aria-label={gt("Show timeline minimap")}
             />
           }
         />
