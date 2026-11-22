@@ -8,7 +8,6 @@ import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
 const APNS_STAGE_TIMEOUT = "10 seconds";
-const APNS_STAGE_TIMEOUT_MS = 10_000;
 
 const ApnsTransportStage = Schema.Literals(["connect", "send", "read-response"]);
 type ApnsTransportStage = typeof ApnsTransportStage.Type;
@@ -56,14 +55,18 @@ export const makeApnsTransport = Effect.fn("ApnsTransport.make")(function* (inpu
     }),
   );
 
+  const evict = (session: NodeHttp2.ClientHttp2Session) => {
+    for (const [origin, cached] of sessions) {
+      if (cached === session) sessions.delete(origin);
+    }
+  };
+
   const openSession = (origin: string) => {
     const session = NodeHttp2.connect(origin);
-    const evict = () => {
-      if (sessions.get(origin) === session) sessions.delete(origin);
-    };
-    session.on("error", evict);
-    session.on("goaway", evict);
-    session.on("close", evict);
+    const evictSession = () => evict(session);
+    session.on("error", evictSession);
+    session.on("goaway", evictSession);
+    session.on("close", evictSession);
     sessions.set(origin, session);
     return session;
   };
@@ -121,58 +124,75 @@ export const makeApnsTransport = Effect.fn("ApnsTransport.make")(function* (inpu
     readonly headers: Readonly<Record<string, string>>;
     readonly body: string;
   }) =>
-    Effect.callback<ApnsTransportResponse, ApnsTransportError>((resume) => {
+    Effect.suspend(() => {
       let stage: ApnsTransportStage = "send";
-      let settled = false;
-      const fail = (cause: unknown) => {
-        if (settled) return;
-        settled = true;
-        resume(
-          Effect.fail(
-            new ApnsTransportError({ environment: requestInput.environment, stage, cause }),
-          ),
-        );
-      };
-      let stream: NodeHttp2.ClientHttp2Stream;
-      try {
-        stream = requestInput.session.request({
-          ...requestInput.headers,
-          ":method": "POST",
-          ":path": requestInput.path,
+      const failure = (cause: unknown) =>
+        new ApnsTransportError({ environment: requestInput.environment, stage, cause });
+      return Effect.callback<ApnsTransportResponse, ApnsTransportError>((resume) => {
+        let settled = false;
+        let responded = false;
+        const fail = (cause: unknown) => {
+          if (settled) return;
+          settled = true;
+          resume(Effect.fail(failure(cause)));
+        };
+        let stream: NodeHttp2.ClientHttp2Stream;
+        try {
+          stream = requestInput.session.request({
+            ...requestInput.headers,
+            ":method": "POST",
+            ":path": requestInput.path,
+          });
+        } catch (cause) {
+          fail(cause);
+          return;
+        }
+        let status = 0;
+        let apnsId: string | null = null;
+        let body = "";
+        stream.setEncoding("utf8");
+        stream.on("response", (headers) => {
+          stage = "read-response";
+          responded = true;
+          status = Number(headers[":status"]);
+          const id = headers["apns-id"];
+          apnsId = typeof id === "string" ? id : null;
         });
-      } catch (cause) {
-        fail(cause);
-        return;
-      }
-      let status = 0;
-      let apnsId: string | null = null;
-      let body = "";
-      stream.setEncoding("utf8");
-      stream.setTimeout(APNS_STAGE_TIMEOUT_MS, () => {
-        fail(new Error("APNs stream timed out."));
-        stream.close(NodeHttp2.constants.NGHTTP2_CANCEL);
-      });
-      stream.on("response", (headers) => {
-        stage = "read-response";
-        status = Number(headers[":status"]);
-        const id = headers["apns-id"];
-        apnsId = typeof id === "string" ? id : null;
-      });
-      stream.on("data", (chunk: string) => {
-        body += chunk;
-      });
-      stream.on("end", () => {
-        if (settled) return;
-        settled = true;
-        resume(Effect.succeed({ status, apnsId, body }));
-      });
-      stream.on("error", fail);
-      stream.on("close", () => fail(new Error("APNs stream closed before the response ended.")));
-      stream.end(requestInput.body);
-      return Effect.sync(() => {
-        settled = true;
-        if (!stream.closed) stream.close(NodeHttp2.constants.NGHTTP2_CANCEL);
-      });
+        stream.on("data", (chunk: string) => {
+          body += chunk;
+        });
+        stream.on("end", () => {
+          if (settled) return;
+          settled = true;
+          resume(Effect.succeed({ status, apnsId, body }));
+        });
+        const abandon = (cause: unknown) => {
+          if (settled) return;
+          if (!responded) {
+            evict(requestInput.session);
+            requestInput.session.close();
+          }
+          fail(cause);
+        };
+        stream.on("error", abandon);
+        stream.on("close", () =>
+          abandon(new Error("APNs stream closed before the response ended.")),
+        );
+        stream.end(requestInput.body);
+        return Effect.sync(() => {
+          settled = true;
+          if (!stream.closed) stream.close(NodeHttp2.constants.NGHTTP2_CANCEL);
+        });
+      }).pipe(
+        Effect.timeoutOrElse({
+          duration: APNS_STAGE_TIMEOUT,
+          orElse: () =>
+            Effect.sync(() => {
+              evict(requestInput.session);
+              requestInput.session.destroy();
+            }).pipe(Effect.andThen(Effect.fail(failure(new Error("APNs stream timed out."))))),
+        }),
+      );
     });
 
   const post: ApnsTransport["Service"]["post"] = Effect.fn("ApnsTransport.post")(

@@ -6,7 +6,9 @@ import * as NodeTls from "node:tls";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import * as Undici from "undici";
@@ -47,9 +49,12 @@ const apnsRequests: Array<{
   readonly body: string;
 }> = [];
 
+const SILENT_PATH = `/3/device/${"5".repeat(64)}`;
+
 const server = NodeHttp2.createSecureServer(
   { allowHTTP1: true, key: TEST_KEY, cert: TEST_CERT },
   (request, response) => {
+    if (request.url === SILENT_PATH) return;
     if (!request.url.startsWith("/3/device/")) {
       response.end(request.httpVersion);
       return;
@@ -167,6 +172,35 @@ describe("makeApnsTransport", () => {
         },
       ]);
       expect(yield* Effect.promise(versionViaGlobalDispatcher)).toBe("1.1");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reconnects after a request times out on a silent session", () =>
+    Effect.gen(function* () {
+      const transport = yield* makeApnsTransport({ originFor: () => origin });
+      const sessionsBefore = sessionCount;
+      const post = {
+        environment: "sandbox",
+        path: SILENT_PATH,
+        headers: { "apns-topic": "com.example.app" },
+        body: '{"aps":{}}',
+      } as const;
+      const silent = yield* Effect.forkChild(transport.post(post));
+      yield* Effect.callback<void>((resume) => {
+        const onRequest = (request: NodeHttp2.Http2ServerRequest) => {
+          if (request.url === SILENT_PATH) resume(Effect.void);
+        };
+        server.on("request", onRequest);
+        return Effect.sync(() => server.off("request", onRequest));
+      });
+      yield* TestClock.adjust("10 seconds");
+      const failure = yield* Fiber.join(silent).pipe(Effect.flip);
+
+      const next = yield* transport.post({ ...post, path: `/3/device/${"a".repeat(64)}` });
+
+      expect(failure.stage).toBe("send");
+      expect(next.status).toBe(400);
+      expect(sessionCount - sessionsBefore).toBe(2);
     }).pipe(Effect.scoped),
   );
 });
