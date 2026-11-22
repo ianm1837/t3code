@@ -9,6 +9,7 @@ import { msg } from "gt-react-native";
 import { AsyncResult, Atom } from "effect/reactivity";
 import { runAtomCommand } from "@t3tools/client-runtime/state/runtime";
 
+import { unregisterDirectPushForEnvironment } from "../features/agent-awareness/directPushRegistration";
 import { hasCloudPublicConfig } from "../features/cloud/publicConfig";
 import { m } from "../i18n/messages";
 import { useConnectionController } from "../features/connection/useConnectionController";
@@ -118,6 +119,12 @@ export const savedConnectionsByIdAtom = Atom.make((get) => {
   ) as Record<EnvironmentId, SavedRemoteConnection>;
 }).pipe(Atom.withLabel("mobile:saved-connections-by-id"));
 
+export const connectedEnvironmentIdsAtom = Atom.make((get) =>
+  Object.values(get(savedConnectionsByIdAtom))
+    .map((connection) => connection.environmentId)
+    .filter((environmentId) => get(environmentConnectedAtom(environmentId))),
+).pipe(Atom.withLabel("mobile:connected-environment-ids"));
+
 export function useSavedRemoteConnections() {
   const catalog = useAtomValue(environmentCatalog.catalogValueAtom);
   const savedConnectionsById = useAtomValue(savedConnectionsByIdAtom);
@@ -193,7 +200,9 @@ export function useRemoteConnections() {
       text: m(msg("Remove")),
       style: "destructive",
       onPress: () => {
-        void controller.removeEnvironment(environmentId);
+        void unregisterDirectPushForEnvironment({ environmentId }).then(() =>
+          controller.removeEnvironment(environmentId),
+        );
       },
     } as const;
     if (environment.isRelayManaged) {
