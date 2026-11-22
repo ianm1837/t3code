@@ -8,6 +8,7 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import {
   apnsAlertPayload,
@@ -101,6 +102,8 @@ const make = Effect.gen(function* () {
     { readonly jwt: string; readonly issuedAtSeconds: number }
   >();
 
+  const signing = yield* Semaphore.make(1);
+
   const providerToken = Effect.fn("ApnsSender.providerToken")(function* (key: ApnsProviderKey) {
     const nowSeconds = Math.floor((yield* DateTime.now).epochMilliseconds / 1_000);
     const cached = providerTokens.get(key);
@@ -115,7 +118,7 @@ const make = Effect.gen(function* () {
     );
     providerTokens.set(key, { jwt, issuedAtSeconds: nowSeconds });
     return jwt;
-  });
+  }, signing.withPermits(1));
 
   const send: ApnsSender["Service"]["send"] = Effect.fn("ApnsSender.send")(function* (input) {
     yield* Effect.annotateCurrentSpan({

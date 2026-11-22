@@ -180,6 +180,7 @@ describe("AgentActivityPush APNs sink", () => {
       const jwt = yield* Jwt.decodeUnverified(authorization?.slice("bearer ".length) ?? "");
       assert.deepStrictEqual(jwt.protectedHeader, { alg: "ES256", kid: "KEY1234567" });
       assert.deepStrictEqual(jwt.claims, { iss: "TEAM123456", iat: Math.floor(NOW_MS / 1_000) });
+      assert.strictEqual(harness.requests[1]?.headers.authorization, authorization);
 
       yield* harness.publish(activityState({ phase: "running" }));
       yield* harness.publish(null);
