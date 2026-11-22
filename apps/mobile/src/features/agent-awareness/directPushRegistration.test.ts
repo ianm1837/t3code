@@ -118,7 +118,13 @@ function install(connected: ReadonlyArray<EnvironmentId>) {
   };
 }
 
-const registration = (environmentId: EnvironmentId, token: string): RpcCall => ({
+const registration = ({
+  environmentId,
+  token,
+}: {
+  readonly environmentId: EnvironmentId;
+  readonly token: string;
+}): RpcCall => ({
   tag: "push.registerDevice",
   environmentId,
   input: {
@@ -144,15 +150,15 @@ describe("installDirectPushRegistration", () => {
     using _registration = install([ENVIRONMENT_A, ENVIRONMENT_B]);
     await callsReach(2);
     expect(byEnvironment(rpc.calls)).toEqual([
-      registration(ENVIRONMENT_A, FIRST_TOKEN),
-      registration(ENVIRONMENT_B, FIRST_TOKEN),
+      registration({ environmentId: ENVIRONMENT_A, token: FIRST_TOKEN }),
+      registration({ environmentId: ENVIRONMENT_B, token: FIRST_TOKEN }),
     ]);
 
     for (const listener of tokenListeners) listener({ type: "ios", data: ROTATED_TOKEN });
     await callsReach(4);
     expect(byEnvironment(rpc.calls.slice(2))).toEqual([
-      registration(ENVIRONMENT_A, ROTATED_TOKEN),
-      registration(ENVIRONMENT_B, ROTATED_TOKEN),
+      registration({ environmentId: ENVIRONMENT_A, token: ROTATED_TOKEN }),
+      registration({ environmentId: ENVIRONMENT_B, token: ROTATED_TOKEN }),
     ]);
   });
 
