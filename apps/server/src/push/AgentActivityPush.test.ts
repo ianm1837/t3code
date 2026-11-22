@@ -3,6 +3,7 @@ import { assert, describe, it } from "@effect/vitest";
 import {
   AuthSessionId,
   EnvironmentId,
+  EventId,
   ThreadId,
   type AuthClientSession,
   type PushAlertPreferences,
@@ -13,10 +14,13 @@ import * as Effect from "effect/Effect";
 import * as Jwt from "effect/jose/Jwt";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
 import * as SessionStore from "../auth/SessionStore.ts";
+import { liveThreadShell } from "../mcp/McpToolAccess.testkit.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as AgentActivityPush from "./AgentActivityPush.ts";
 import { APNS_PROVIDER_KEY_SECRET, encodeApnsProviderKey } from "./apnsProviderKey.ts";
 import * as ApnsSender from "./ApnsSender.ts";
@@ -237,6 +241,51 @@ describe("AgentActivityPush APNs sink", () => {
           [...sent],
         );
       }),
+  );
+
+  it.effect("removes levels of deleted threads and keeps archived ones", () =>
+    Effect.gen(function* () {
+      const harness = yield* makeHarness({ respond: okResponse });
+      const removed = ThreadId.make("thread-removed");
+      const archived = ThreadId.make("thread-archived");
+      const live = ThreadId.make("thread-live");
+      for (const threadId of [removed, archived, live]) {
+        yield* harness.registry.setThreadLevel({ threadId, level: "off" });
+      }
+      const prune = yield* AgentActivityPush.makeThreadLevelPruning.pipe(
+        Effect.provideService(PushDeviceRegistry.PushDeviceRegistry, harness.registry),
+        Effect.provide(
+          Layer.mock(ThreadManagement.ThreadManagementService)({
+            getThreadShell: (threadId) =>
+              Effect.succeed(
+                threadId === removed
+                  ? null
+                  : {
+                      ...liveThreadShell(threadId),
+                      archivedAt: threadId === archived ? DateTime.makeUnsafe(NOW) : null,
+                    },
+              ),
+            streamDomainEvents: Stream.make({
+              id: EventId.make("event:thread-live:deleted"),
+              type: "thread.deleted",
+              threadId: live,
+              occurredAt: DateTime.makeUnsafe(NOW),
+              payload: {
+                ...liveThreadShell(live),
+                lastVisitedAt: null,
+                deletedAt: DateTime.makeUnsafe(NOW),
+              },
+            }),
+          }),
+        ),
+      );
+
+      yield* prune;
+
+      assert.deepStrictEqual(yield* harness.registry.listThreadLevels, {
+        threads: [{ threadId: archived, level: "off" }],
+      });
+    }),
   );
 
   it.effect.each([

@@ -14,9 +14,12 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 
 import * as ServerSecretStore from "../auth/ServerSecretStore.ts";
+import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
 import * as AgentAwarenessRelay from "../relay/AgentAwarenessRelay.ts";
+import { forkParked } from "../serverActivation.ts";
 import {
   isExpiredAgentActivityState,
   isPermanentApnsTokenFailure,
@@ -207,7 +210,59 @@ export const makeApnsSink = Effect.gen(function* () {
   return sink;
 });
 
+export const makeThreadLevelPruning = Effect.gen(function* () {
+  const registry = yield* PushDeviceRegistry.PushDeviceRegistry;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const removeLevel = (threadId: ThreadId) =>
+    registry
+      .setThreadLevel({ threadId, level: "all" })
+      .pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("Could not remove a deleted thread's push alert level.", cause),
+        ),
+      );
+  const isDeleted = (threadId: ThreadId) =>
+    threads.getThreadShell(threadId).pipe(
+      Effect.map((shell) => shell === null),
+      Effect.orElseSucceed(() => false),
+    );
+  return Effect.gen(function* () {
+    const { threads: levels } = yield* registry.listThreadLevels.pipe(
+      Effect.orElseSucceed(() => ({ threads: [] })),
+    );
+    yield* Effect.forEach(
+      levels,
+      ({ threadId }) =>
+        isDeleted(threadId).pipe(
+          Effect.flatMap((deleted) => (deleted ? removeLevel(threadId) : Effect.void)),
+        ),
+      { discard: true },
+    );
+    yield* Stream.runForEach(
+      threads.streamDomainEvents.pipe(Stream.filter((event) => event.type === "thread.deleted")),
+      (event) => removeLevel(event.threadId),
+    ).pipe(
+      Effect.catchCause((cause) =>
+        Effect.logWarning("Stopped removing deleted threads' push alert levels.", cause),
+      ),
+    );
+  }).pipe(Effect.withSpan("AgentActivityPush.pruneThreadLevels"));
+});
+
 export const layer = Layer.effect(
   AgentActivityPush,
-  Effect.flatMap(makeApnsSink, AgentAwarenessRelay.makeAgentActivityPublisher),
+  Effect.gen(function* () {
+    const publisher = yield* Effect.flatMap(
+      makeApnsSink,
+      AgentAwarenessRelay.makeAgentActivityPublisher,
+    );
+    const pruneThreadLevels = yield* makeThreadLevelPruning;
+    return AgentActivityPush.of({
+      ...publisher,
+      start: Effect.fn("AgentActivityPush.startWithThreadLevelPruning")(function* () {
+        yield* publisher.start();
+        yield* forkParked(pruneThreadLevels);
+      }),
+    });
+  }),
 );
