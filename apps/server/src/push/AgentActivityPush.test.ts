@@ -196,21 +196,40 @@ describe("AgentActivityPush APNs sink", () => {
   ])("handles APNs $status $reason", ({ status, reason, removed, retried }) =>
     Effect.gen(function* () {
       const harness = yield* makeHarness({
-        respond: () => ({ status, apnsId: null, body: JSON.stringify({ reason }) }),
+        respond: (token) =>
+          token === TOKEN_A
+            ? { status, apnsId: null, body: JSON.stringify({ reason }) }
+            : okResponse(),
       });
       yield* harness.register({ deviceId: "device-a", token: TOKEN_A, sessionId: SESSION_A });
+      yield* harness.register({ deviceId: "device-b", token: TOKEN_B, sessionId: SESSION_B });
+      const sent = () =>
+        harness.requests
+          .map((request) => `${request.path.slice(-1)}@${request.headers["apns-collapse-id"]}`)
+          .toSorted();
 
       const outcome = yield* harness.publish(activityState()).pipe(Effect.flip, Effect.option);
       assert.strictEqual(Option.isSome(outcome), retried);
       if (retried) {
         yield* harness.publish(activityState()).pipe(Effect.flip);
-        assert.deepStrictEqual(
-          harness.requests.map((request) => request.headers["apns-collapse-id"]),
-          [`thread-1:${NOW_MS}`, `thread-1:${NOW_MS}`],
-        );
+        assert.deepStrictEqual(sent(), [
+          `a@thread-1:${NOW_MS}`,
+          `a@thread-1:${NOW_MS}`,
+          `b@thread-1:${NOW_MS}`,
+        ]);
+        const laterUpdatedAt = "2026-09-04T12:00:01.000Z";
+        const laterMs = DateTime.toEpochMillis(DateTime.makeUnsafe(laterUpdatedAt));
+        yield* harness.publish(activityState({ updatedAt: laterUpdatedAt })).pipe(Effect.flip);
+        assert.deepStrictEqual(sent(), [
+          `a@thread-1:${NOW_MS}`,
+          `a@thread-1:${NOW_MS}`,
+          `a@thread-1:${laterMs}`,
+          `b@thread-1:${NOW_MS}`,
+          `b@thread-1:${laterMs}`,
+        ]);
       }
       const tokens = (yield* harness.registry.list).map((device) => device.token);
-      assert.deepStrictEqual(tokens, removed ? [] : [TOKEN_A]);
+      assert.deepStrictEqual(tokens, removed ? [TOKEN_B] : [TOKEN_A, TOKEN_B]);
     }),
   );
 

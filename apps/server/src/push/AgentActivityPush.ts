@@ -1,3 +1,4 @@
+import type { ThreadId } from "@t3tools/contracts";
 import type {
   RelayAgentActivityState,
   RelayAgentAwarenessPreferences,
@@ -62,6 +63,10 @@ export const makeApnsSink = Effect.gen(function* () {
   const registry = yield* PushDeviceRegistry.PushDeviceRegistry;
   const sender = yield* ApnsSender.ApnsSender;
   let cachedKey: { readonly raw: string; readonly key: ApnsProviderKey } | undefined;
+  const settledByThread = new Map<
+    ThreadId,
+    { readonly state: RelayAgentActivityState; readonly tokens: Set<string> }
+  >();
 
   const readTarget = Effect.gen(function* () {
     const bytes = yield* secrets.get(APNS_PROVIDER_KEY_SECRET);
@@ -75,12 +80,20 @@ export const makeApnsSink = Effect.gen(function* () {
 
   const deliver = Effect.fn("AgentActivityPush.deliver")(function* (input: {
     readonly target: ApnsProviderKey;
+    readonly threadId: ThreadId;
     readonly state: RelayAgentActivityState | null;
   }) {
     const state = input.state;
-    if (state === null) return;
     const nowMs = (yield* DateTime.now).epochMilliseconds;
+    for (const [threadId, settled] of settledByThread) {
+      if (isExpiredAgentActivityState({ state: settled.state, nowMs })) {
+        settledByThread.delete(threadId);
+      }
+    }
+    const previous = settledByThread.get(input.threadId);
+    settledByThread.delete(input.threadId);
     if (
+      state === null ||
       isExpiredAgentActivityState({ state, nowMs }) ||
       !shouldAlertForActivity({
         phase: state.phase,
@@ -91,8 +104,12 @@ export const makeApnsSink = Effect.gen(function* () {
     ) {
       return;
     }
+    const settledTokens =
+      previous?.state.updatedAt === state.updatedAt ? previous.tokens : new Set<string>();
     const notification = notificationForActivity({ ...state, status: statusForPhase(state.phase) });
-    const devices = yield* registry.listDeliverable;
+    const devices = (yield* registry.listDeliverable).filter(
+      (device) => !settledTokens.has(device.token),
+    );
     if (devices.length === 0) return;
     const results = yield* Effect.forEach(
       devices,
@@ -105,12 +122,12 @@ export const makeApnsSink = Effect.gen(function* () {
     );
     const permanentTokens: string[] = [];
     const failures: string[] = [];
-    let retryable = 0;
+    const retryableTokens = new Set<string>();
     let delivered = 0;
     for (const { device, result } of results) {
       if (Result.isFailure(result)) {
         failures.push(result.failure._tag);
-        if (result.failure._tag === "ApnsTransportError") retryable += 1;
+        if (result.failure._tag === "ApnsTransportError") retryableTokens.add(device.token);
         continue;
       }
       const response = result.success;
@@ -122,7 +139,7 @@ export const makeApnsSink = Effect.gen(function* () {
       if (isPermanentApnsTokenFailure(response)) {
         permanentTokens.push(device.token);
       } else if (isRetryableStatus(response.status)) {
-        retryable += 1;
+        retryableTokens.add(device.token);
       }
     }
     yield* registry.removeTokens({ tokens: permanentTokens });
@@ -134,8 +151,15 @@ export const makeApnsSink = Effect.gen(function* () {
       removedTokens: permanentTokens.length,
       failures,
     });
-    if (retryable > 0) {
-      return yield* new ApnsDeliveryRetryableError({ failedDevices: retryable, failures });
+    if (retryableTokens.size > 0) {
+      for (const device of devices) {
+        if (!retryableTokens.has(device.token)) settledTokens.add(device.token);
+      }
+      settledByThread.set(input.threadId, { state, tokens: settledTokens });
+      return yield* new ApnsDeliveryRetryableError({
+        failedDevices: retryableTokens.size,
+        failures,
+      });
     }
   });
 
