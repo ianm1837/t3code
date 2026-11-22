@@ -124,6 +124,10 @@ import * as Keybindings from "./keybindings.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
 import * as ServerOwnership from "./serverOwnership.ts";
 import * as AgentAwarenessRelay from "./relay/AgentAwarenessRelay.ts";
+import * as AgentActivityPush from "./push/AgentActivityPush.ts";
+import * as ApnsSender from "./push/ApnsSender.ts";
+import * as ApnsTransport from "./push/ApnsTransport.ts";
+import * as PushDeviceRegistry from "./push/PushDeviceRegistry.ts";
 import { hasCloudPublicConfig } from "./cloud/publicConfig.ts";
 import * as ServerSettings from "./serverSettings.ts";
 import * as ManagedLimits from "./policy/managedLimits.ts";
@@ -738,6 +742,10 @@ const layerServerRestart = Layer.effect(
 const layerRuntimeCoreDependenciesBase = Layer.mergeAll(
   AgentAwarenessRelay.layer,
   ProviderHostPathWatcher.layer.pipe(Layer.provide(layerDesktopTelemetryReceiver)),
+  AgentActivityPush.layer.pipe(
+    Layer.provideMerge(PushDeviceRegistry.layer),
+    Layer.provide(ApnsSender.layer.pipe(Layer.provide(ApnsTransport.layer))),
+  ),
   HeldHooksWaker.layer,
   layerThreadSettlementWorker,
   layerIdleCompactionWorker,

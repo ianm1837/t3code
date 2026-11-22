@@ -97,6 +97,12 @@ describe("RPC authorization scopes", () => {
     );
   });
 
+  it("lets thread readers register a device for push alerts", () => {
+    for (const method of [WS_METHODS.pushRegisterDevice, WS_METHODS.pushUnregisterDevice]) {
+      expect(requiredScopeForRpcMethod(method)).toBe(AuthOrchestrationReadScope);
+    }
+  });
+
   it("still lets readers load settings the way installed Swift clients ask", () => {
     expect(requiredScopeForRpcMethod("server.getSettings")).toBe(AuthOrchestrationReadScope);
   });

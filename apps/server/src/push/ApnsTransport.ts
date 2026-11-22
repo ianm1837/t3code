@@ -3,6 +3,7 @@ import * as NodeHttp2 from "node:http2";
 import { RelayApnsEnvironment } from "@t3tools/contracts/relay";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
 
@@ -184,3 +185,13 @@ export const makeApnsTransport = Effect.fn("ApnsTransport.make")(function* (inpu
 
   return ApnsTransport.of({ post });
 });
+
+export const layer = Layer.effect(
+  ApnsTransport,
+  makeApnsTransport({
+    originFor: (environment) =>
+      environment === "production"
+        ? "https://api.push.apple.com"
+        : "https://api.sandbox.push.apple.com",
+  }),
+);

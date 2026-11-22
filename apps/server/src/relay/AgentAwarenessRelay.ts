@@ -413,12 +413,12 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
     .map((thread) => thread.id);
 }
 
-type AgentActivitySinkTarget<Target> =
+export type AgentActivitySinkTarget<Target> =
   | { readonly _tag: "Ready"; readonly target: Target }
   | { readonly _tag: "Disabled" }
   | { readonly _tag: "Unlinked" };
 
-interface AgentActivitySink<Target, E> {
+export interface AgentActivitySink<Target, E> {
   readonly serviceName: string;
   readonly unlinkedReason: string;
   readonly readTarget: Effect.Effect<AgentActivitySinkTarget<Target>, E>;
@@ -579,9 +579,10 @@ const makeRelaySink = Effect.gen(function* () {
   return sink;
 });
 
-const makeAgentActivityPublisher = Effect.fn("AgentActivityPublisher.make")(function* <Target, E>(
-  sink: AgentActivitySink<Target, E>,
-) {
+export const makeAgentActivityPublisher = Effect.fn("AgentActivityPublisher.make")(function* <
+  Target,
+  E,
+>(sink: AgentActivitySink<Target, E>) {
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const projects = yield* ProjectService.ProjectService;

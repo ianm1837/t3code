@@ -213,6 +213,7 @@ import { terminalOutputStream, withOutputWindow } from "./terminal/OutputProtoco
 import { withSocketHeartbeat } from "./socketHeartbeat.ts";
 import * as ServerBrowser from "./preview/ServerBrowser.ts";
 import * as DeviceService from "./device/DeviceService.ts";
+import * as PushDeviceRegistry from "./push/PushDeviceRegistry.ts";
 import { remoteSshDeviceHosts } from "./device/localSshDeviceHost.ts";
 import * as PreviewManager from "./preview/Manager.ts";
 import { issueAssetUrl } from "./assets/AssetAccess.ts";
@@ -1525,6 +1526,7 @@ export const layerWsRpc = (
       const reviewGuides = yield* PullRequestReviewGuideService.PullRequestReviewGuideService;
       const pullRequestSync = yield* PullRequestSyncReactor.PullRequestSyncReactor;
       const deviceService = yield* DeviceService.DeviceService;
+      const pushDevices = yield* PushDeviceRegistry.PushDeviceRegistry;
       const deviceHostContext =
         yield* Effect.context<Effect.Services<ReturnType<typeof remoteSshDeviceHosts>>>();
       const orchestrationEngine = yield* Orchestrator.OrchestratorV2;
@@ -3532,6 +3534,10 @@ export const layerWsRpc = (
         [WS_METHODS.deviceShutdown]: (input) => deviceService.shutdown(input),
         [WS_METHODS.deviceDetail]: (input) => deviceService.detail(input),
         [WS_METHODS.deviceAction]: (input) => deviceService.action(input),
+        [WS_METHODS.pushRegisterDevice]: (input) =>
+          pushDevices.register({ registration: input, sessionId: currentSessionId }),
+        [WS_METHODS.pushUnregisterDevice]: (input) =>
+          pushDevices.unregister(input).pipe(Effect.asVoid),
         [WS_METHODS.subscribeDeviceState]: (_input) => DeviceService.stateStream(deviceService),
         [WS_METHODS.previewStopLocalServer]: (input) => portDiscovery.stopServer(input),
         [WS_METHODS.subscribeDiscoveredLocalServers]: (input) =>
