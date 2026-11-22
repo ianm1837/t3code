@@ -193,16 +193,6 @@ function hasLivePublishedState(
   return identity !== undefined && identity !== CLEARED_PUBLISH_IDENTITY;
 }
 
-function resolveAgentActivityPublishingStartupState(input: {
-  readonly relayConfigured: boolean;
-  readonly publishEnabled: boolean;
-}): "waiting-for-link" | "disabled" | "enabled" {
-  if (!input.relayConfigured) {
-    return "waiting-for-link";
-  }
-  return input.publishEnabled ? "enabled" : "disabled";
-}
-
 const RELAY_AGENT_ACTIVITY_DETAIL_MAX_LENGTH = 160;
 const REDACTED_RELAY_AGENT_FAILURE_DETAIL = "The agent run failed.";
 const RELAY_AGENT_ACTIVITY_RETRY_DELAYS_MS = [1_000, 2_000, 4_000, 8_000, 16_000] as const;
@@ -423,22 +413,38 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
     .map((thread) => thread.id);
 }
 
-/** @public */
-export const make = Effect.gen(function* () {
+type AgentActivitySinkTarget<Target> =
+  | { readonly _tag: "Ready"; readonly target: Target }
+  | { readonly _tag: "Disabled" }
+  | { readonly _tag: "Unlinked" };
+
+interface AgentActivitySink<Target, E> {
+  readonly serviceName: string;
+  readonly unlinkedReason: string;
+  readonly readTarget: Effect.Effect<AgentActivitySinkTarget<Target>, E>;
+  readonly sameTarget: (input: { readonly previous: Target; readonly next: Target }) => boolean;
+  readonly publish: (input: {
+    readonly target: Target;
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly projectId: string | null;
+    readonly state: RelayAgentActivityState | null;
+    readonly reason: string;
+  }) => Effect.Effect<void, E>;
+  readonly logStartup: (target: AgentActivitySinkTarget<Target>) => Effect.Effect<void>;
+  readonly logReady: (target: Target) => Effect.Effect<void>;
+}
+
+interface RelayTarget {
+  readonly url: string;
+  readonly issuer: string;
+  readonly environmentCredential: string;
+}
+
+const makeRelaySink = Effect.gen(function* () {
   const secrets = yield* ServerSecretStore.ServerSecretStore;
-  const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
-  const threads = yield* ThreadManagement.ThreadManagementService;
-  const projects = yield* ProjectService.ProjectService;
   const random = yield* SecureRandom.SecureRandom;
   const signingKey = yield* EnvironmentSigningKey;
-  const scope = yield* Effect.scope;
-  const startedAt = (yield* DateTime.now).epochMilliseconds;
-  const catchUpRequests = yield* Queue.dropping<void>(1);
-  const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
-  // Android keys alerts by phase and time, so a child's unchanged request keeps
-  // its first alert time through parent renames, relinks and the parent's own requests.
-  const childAlertByThread = new Map<ThreadId, SubagentAlert>();
-  const subagentRequests = new Map<ThreadId, SubagentRequest>();
 
   const readSecretString = (name: string) =>
     secrets
@@ -464,6 +470,13 @@ export const make = Effect.gen(function* () {
     Effect.map(isAgentActivityPublishingEnabledValue),
   );
 
+  const readTarget = Effect.gen(function* () {
+    const relayConfig = yield* readRelayConfig;
+    if (!relayConfig) return { _tag: "Unlinked" } as const;
+    if (!(yield* readPublishAgentActivityEnabled)) return { _tag: "Disabled" } as const;
+    return { _tag: "Ready", target: relayConfig } as const;
+  });
+
   const makeRelayClient = (relayConfig: {
     readonly url: string;
     readonly environmentCredential: string;
@@ -473,8 +486,115 @@ export const make = Effect.gen(function* () {
       transformClient: relayEnvironmentClient(relayConfig.environmentCredential),
     }).pipe(Effect.provide(FetchHttpClient.layer));
 
-  let cachedRelayClient: Effect.Success<ReturnType<typeof makeRelayClient>> | undefined;
-  let publishedRelayConfig: NonNullable<Effect.Success<typeof readRelayConfig>> | undefined;
+  let cachedRelayClient:
+    | {
+        readonly relayConfig: RelayTarget;
+        readonly client: Effect.Success<ReturnType<typeof makeRelayClient>>;
+      }
+    | undefined;
+
+  const publishState = Effect.fn("relay.agent_activity.publish")(function* (input: {
+    readonly target: RelayTarget;
+    readonly environmentId: EnvironmentId;
+    readonly threadId: ThreadId;
+    readonly projectId: string | null;
+    readonly state: RelayAgentActivityState | null;
+    readonly reason: string;
+  }) {
+    const relayConfig = input.target;
+    const { environmentId, threadId } = input;
+    if (cachedRelayClient?.relayConfig !== relayConfig) {
+      cachedRelayClient = { relayConfig, client: yield* makeRelayClient(relayConfig) };
+    }
+    const relayClient = cachedRelayClient.client;
+    const proof = yield* makePublishProof({
+      relayIssuer: relayConfig.issuer,
+      environmentId,
+      threadId,
+      state: input.state,
+      jti: yield* random.uuidV4(),
+    }).pipe(Effect.provideService(EnvironmentSigningKey, signingKey));
+
+    yield* Effect.logInfo("publishing agent activity for thread", {
+      environmentId,
+      threadId,
+      projectId: input.projectId,
+      statePhase: input.state?.phase ?? null,
+      hasState: input.state !== null,
+      reason: input.reason,
+    });
+
+    const response = yield* relayClient.server
+      .publishAgentActivity({
+        params: {
+          environmentId,
+          threadId,
+        },
+        payload: {
+          state: input.state,
+          proof,
+        },
+      })
+      .pipe(Effect.timeout("10 seconds"));
+
+    yield* Effect.logInfo("agent activity publish completed", {
+      environmentId,
+      threadId,
+      ok: response.ok,
+      deliveries: deliveryStats(response.deliveries),
+    });
+  });
+
+  const sink: AgentActivitySink<
+    RelayTarget,
+    Effect.Error<typeof readTarget> | Effect.Error<ReturnType<typeof publishState>>
+  > = {
+    serviceName: "AgentAwarenessRelay",
+    unlinkedReason: "relay link credentials unavailable",
+    readTarget,
+    sameTarget: ({ previous, next }) =>
+      previous.url === next.url &&
+      previous.issuer === next.issuer &&
+      previous.environmentCredential === next.environmentCredential,
+    publish: (input) => publishState(input).pipe(withRelayClientTracing),
+    logStartup: (target) => {
+      switch (target._tag) {
+        case "Unlinked":
+          return Effect.logInfo(
+            "agent activity publishing standby; waiting for T3 Connect link reconciliation",
+          );
+        case "Disabled":
+          return Effect.logInfo("agent activity publishing disabled by T3 Connect configuration");
+        case "Ready":
+          return Effect.logInfo("agent activity publishing enabled", {
+            relayUrl: target.target.url,
+          });
+      }
+    },
+    logReady: (target) =>
+      Effect.logInfo("agent activity publishing enabled after link reconciliation", {
+        relayUrl: target.url,
+      }),
+  };
+  return sink;
+});
+
+const makeAgentActivityPublisher = Effect.fn("AgentActivityPublisher.make")(function* <Target, E>(
+  sink: AgentActivitySink<Target, E>,
+) {
+  const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
+  const threads = yield* ThreadManagement.ThreadManagementService;
+  const projects = yield* ProjectService.ProjectService;
+  const scope = yield* Effect.scope;
+  const startedAt = (yield* DateTime.now).epochMilliseconds;
+  const catchUpRequests = yield* Queue.dropping<void>(1);
+  const publishedStateByThreadRef = yield* Ref.make(new Map<ThreadId, string>());
+  // Android keys alerts by phase and time, so a child's unchanged request keeps
+  // its first alert time through parent renames, relinks and the parent's own requests.
+  const childAlertByThread = new Map<ThreadId, SubagentAlert>();
+  const subagentRequests = new Map<ThreadId, SubagentRequest>();
+
+  let publishedTarget: Target | undefined;
 
   // Confirm through the same worker so tombstones cannot race live updates; recovery clears the deadline.
   const publishConfirmDeadlines = new Map<ThreadId, number>();
@@ -496,88 +616,40 @@ export const make = Effect.gen(function* () {
   let schedulePublishRetry: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
   let enqueueTopLevelPublish: (threadId: ThreadId) => Effect.Effect<void> = () => Effect.void;
   const resetPublishedConnection = Effect.gen(function* () {
-    publishedRelayConfig = undefined;
-    cachedRelayClient = undefined;
+    publishedTarget = undefined;
     publishConfirmDeadlines.clear();
     heldCompletions.clear();
     yield* Ref.set(publishedStateByThreadRef, new Map());
   });
 
   const publishThreadUnsafe = Effect.fn("publishThreadUnsafe")(function* (threadId: ThreadId) {
-    const publishAgentActivity = yield* readPublishAgentActivityEnabled;
-    if (!publishAgentActivity) {
+    const target = yield* sink.readTarget;
+    if (target._tag !== "Ready") {
       yield* cancelPublishRetries;
       yield* resetPublishedConnection;
-      yield* Effect.logDebug("agent activity publish skipped; publication disabled", {
-        threadId,
-      });
-      return;
-    }
-    const relayConfig = yield* readRelayConfig;
-    if (!relayConfig) {
-      yield* cancelPublishRetries;
-      yield* resetPublishedConnection;
-      yield* Effect.logDebug("agent activity publish skipped; relay link credentials unavailable", {
-        threadId,
-      });
+      yield* Effect.logDebug(
+        target._tag === "Disabled"
+          ? "agent activity publish skipped; publication disabled"
+          : `agent activity publish skipped; ${sink.unlinkedReason}`,
+        { threadId },
+      );
       return;
     }
     if (
-      publishedRelayConfig?.url !== relayConfig.url ||
-      publishedRelayConfig.issuer !== relayConfig.issuer ||
-      publishedRelayConfig.environmentCredential !== relayConfig.environmentCredential
+      publishedTarget === undefined ||
+      !sink.sameTarget({ previous: publishedTarget, next: target.target })
     ) {
       yield* resetPublishedConnection;
-      publishedRelayConfig = relayConfig;
+      publishedTarget = target.target;
     }
+    const activeTarget = publishedTarget;
     const environmentId = yield* serverEnvironment.getEnvironmentId;
 
-    const publishState = Effect.fn("relay.agent_activity.publish")(function* (input: {
+    const publishState = (input: {
       readonly projectId: string | null;
       readonly state: RelayAgentActivityState | null;
       readonly reason: string;
-    }) {
-      if (cachedRelayClient === undefined) {
-        cachedRelayClient = yield* makeRelayClient(relayConfig);
-      }
-      const relayClient = cachedRelayClient;
-      const proof = yield* makePublishProof({
-        relayIssuer: relayConfig.issuer,
-        environmentId,
-        threadId,
-        state: input.state,
-        jti: yield* random.uuidV4(),
-      }).pipe(Effect.provideService(EnvironmentSigningKey, signingKey));
-
-      yield* Effect.logInfo("publishing agent activity for thread", {
-        environmentId,
-        threadId,
-        projectId: input.projectId,
-        statePhase: input.state?.phase ?? null,
-        hasState: input.state !== null,
-        reason: input.reason,
-      });
-
-      const response = yield* relayClient.server
-        .publishAgentActivity({
-          params: {
-            environmentId,
-            threadId,
-          },
-          payload: {
-            state: input.state,
-            proof,
-          },
-        })
-        .pipe(Effect.timeout("10 seconds"));
-
-      yield* Effect.logInfo("agent activity publish completed", {
-        environmentId,
-        threadId,
-        ok: response.ok,
-        deliveries: deliveryStats(response.deliveries),
-      });
-    });
+    }) => sink.publish({ ...input, target: activeTarget, environmentId, threadId });
 
     // Read only this thread; full shell reads would make each activity event scale with all threads.
     const threadShell = yield* readAwarenessThread(threadId);
@@ -677,7 +749,7 @@ export const make = Effect.gen(function* () {
           projectId: unsettled.projectId,
           state: completion,
           reason: unsettled.reason,
-        }).pipe(withRelayClientTracing);
+        });
         heldCompletions.delete(threadId);
         publishConfirmDeadlines.set(threadId, nowMs + 5_000);
         yield* Ref.update(publishedStateByThreadRef, (publishedStates) =>
@@ -716,7 +788,7 @@ export const make = Effect.gen(function* () {
       projectId: snapshot.projectId,
       state,
       reason: snapshot.reason,
-    }).pipe(withRelayClientTracing);
+    });
     if (state !== null && childRequestId !== undefined) {
       childAlertByThread.set(threadId, { requestId: childRequestId, updatedAt: state.updatedAt });
     }
@@ -810,7 +882,7 @@ export const make = Effect.gen(function* () {
           cause: Cause.pretty(cause),
         }).pipe(Effect.andThen(schedulePublishRetry(threadId)));
       }),
-      Effect.withSpan("AgentAwarenessRelay.publishThread"),
+      Effect.withSpan(`${sink.serviceName}.publishThread`),
     );
   });
 
@@ -856,24 +928,14 @@ export const make = Effect.gen(function* () {
   });
 
   const publishActiveThreadsUnsafe = Effect.gen(function* () {
-    const relayUrl = yield* readSecretString(RELAY_URL_SECRET).pipe(
-      Effect.orElseSucceed(() => null),
-    );
-    if (!relayUrl) {
-      yield* Effect.logDebug("agent activity snapshot skipped; relay link credentials unavailable");
+    const target = yield* sink.readTarget;
+    if (target._tag === "Unlinked") {
+      yield* Effect.logDebug(`agent activity snapshot skipped; ${sink.unlinkedReason}`);
       return "unlinked" as const;
     }
-    const publishAgentActivity = yield* readPublishAgentActivityEnabled.pipe(
-      Effect.orElseSucceed(() => false),
-    );
-    if (!publishAgentActivity) {
+    if (target._tag === "Disabled") {
       yield* Effect.logDebug("agent activity snapshot skipped; publication disabled");
       return "disabled" as const;
-    }
-    const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
-    if (!relayConfig) {
-      yield* Effect.logDebug("agent activity snapshot skipped; relay link credentials unavailable");
-      return "unlinked" as const;
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
     const projectSnapshot = yield* projects.snapshot;
@@ -917,10 +979,8 @@ export const make = Effect.gen(function* () {
       );
       if (result === "published") {
         if (logEnabledWhenReady) {
-          const relayConfig = yield* readRelayConfig.pipe(Effect.orElseSucceed(() => null));
-          yield* Effect.logInfo("agent activity publishing enabled after link reconciliation", {
-            relayUrl: relayConfig?.url,
-          });
+          const target = yield* sink.readTarget.pipe(Effect.orElseSucceed(() => null));
+          if (target?._tag === "Ready") yield* sink.logReady(target.target);
         }
         logEnabledWhenReady = false;
         unlinkedRetryDelayMs = 5_000;
@@ -949,34 +1009,15 @@ export const make = Effect.gen(function* () {
       scope,
     ).pipe(Effect.asVoid);
 
-  const start: AgentAwarenessRelay["Service"]["start"] = Effect.fn("AgentAwarenessRelay.start")(
+  const start: AgentAwarenessRelay["Service"]["start"] = Effect.fn(`${sink.serviceName}.start`)(
     function* () {
-      const [relayConfig, publishEnabled] = yield* Effect.all([
-        readRelayConfig.pipe(Effect.orElseSucceed(() => null)),
-        readPublishAgentActivityEnabled.pipe(Effect.orElseSucceed(() => false)),
-      ]);
-      const startupState = resolveAgentActivityPublishingStartupState({
-        relayConfigured: relayConfig !== null,
-        publishEnabled,
-      });
-      switch (startupState) {
-        case "waiting-for-link":
-          yield* Effect.logInfo(
-            "agent activity publishing standby; waiting for T3 Connect link reconciliation",
-          );
-          break;
-        case "disabled":
-          yield* Effect.logInfo("agent activity publishing disabled by T3 Connect configuration");
-          break;
-        case "enabled":
-          yield* Effect.logInfo("agent activity publishing enabled", {
-            relayUrl: relayConfig?.url,
-          });
-          break;
-      }
+      const target = yield* sink.readTarget.pipe(
+        Effect.orElseSucceed((): AgentActivitySinkTarget<Target> => ({ _tag: "Unlinked" })),
+      );
+      yield* sink.logStartup(target);
       yield* forkParked(
         Effect.sleep("1 second").pipe(
-          Effect.andThen(publishActiveThreadsWhenConfigured(startupState !== "enabled")),
+          Effect.andThen(publishActiveThreadsWhenConfigured(target._tag !== "Ready")),
         ),
       );
       yield* forkParked(
@@ -997,11 +1038,14 @@ export const make = Effect.gen(function* () {
   return AgentAwarenessRelay.of({
     publishThread,
     drain: worker.drain,
-    requestCatchUp: Effect.fn("AgentAwarenessRelay.requestCatchUp")(function () {
+    requestCatchUp: Effect.fn(`${sink.serviceName}.requestCatchUp`)(function () {
       return Queue.offer(catchUpRequests, undefined).pipe(Effect.asVoid);
     }),
     start,
   });
 });
+
+/** @public */
+export const make = Effect.flatMap(makeRelaySink, makeAgentActivityPublisher);
 
 export const layer = Layer.effect(AgentAwarenessRelay, make);
