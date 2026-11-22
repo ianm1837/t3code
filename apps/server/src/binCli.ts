@@ -21,6 +21,7 @@ import { extendConnectionAttemptTimeout, keepOutboundFetchOnHttp1 } from "./outb
 import { sharedServerCommandFlags } from "./cli/config.ts";
 import { projectCommand } from "./cli/project.ts";
 import { feedbackCommand } from "./cli/feedback.ts";
+import { pushCommand } from "./cli/push.ts";
 import { threadCommand } from "./cli/thread.ts";
 import { workflowCommand } from "./cli/workflow.ts";
 import { runDefaultServerCommand, serveCommand, startCommand } from "./cli/server.ts";
@@ -92,6 +93,7 @@ export const makeCli = ({ cloudEnabled = hasCloudPublicConfig } = {}) =>
       environmentCommand,
       browserCommand,
       projectCommand,
+      pushCommand,
       threadCommand,
       feedbackCommand,
       workflowCommand,

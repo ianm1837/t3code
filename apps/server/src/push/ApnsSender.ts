@@ -46,7 +46,7 @@ const ApnsAlertRequestBody = Schema.Struct({
 });
 const encodeApnsAlertRequestBody = Schema.encodeEffect(Schema.fromJsonString(ApnsAlertRequestBody));
 
-const signApnsProviderToken = Effect.fn("ApnsSender.signProviderToken")(function* (input: {
+export const signApnsProviderToken = Effect.fn("ApnsSender.signProviderToken")(function* (input: {
   readonly key: ApnsProviderKey;
   readonly issuedAtSeconds: number;
 }) {
