@@ -18,6 +18,7 @@ import { supportsDirectPush } from "./capabilities";
 const threadNotificationLevelsQuery = createEnvironmentRpcQueryAtomFamily(connectionAtomRuntime, {
   label: "mobile:push:thread-notification-levels",
   tag: WS_METHODS.pushListThreadNotificationLevels,
+  staleTimeMs: 5_000,
 });
 
 const unsupportedLevelsAtom = Atom.make(AsyncResult.initial()).pipe(
