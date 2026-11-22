@@ -13,6 +13,10 @@ export function agentAwarenessPushMode(): AgentAwarenessPushMode {
   return extra?.iosPersonalTeamBuild === true ? "none" : "relay";
 }
 
+export function supportsDirectPush(): boolean {
+  return Platform.OS === "ios" && agentAwarenessPushMode() === "direct";
+}
+
 export function supportsAgentAwarenessPush() {
   return Platform.OS === "android"
     ? supportsAndroidAgentNotifications()

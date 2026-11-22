@@ -25,9 +25,12 @@ import {
   useSavedRemoteConnections,
 } from "../../state/use-remote-environment-registry";
 import {
+  directPushAlerts,
   getDirectPushStatus,
+  setDirectPushAlert,
   setDirectPushEnabled,
   subscribeDirectPushStatus,
+  type DirectPushAlertKind,
   type DirectPushEnvironmentStatus,
 } from "../agent-awareness/directPushRegistration";
 import { SettingsRow } from "./components/SettingsRow";
@@ -62,7 +65,31 @@ export function DirectPushNotificationsScreen() {
   const [saving, setSaving] = useState(false);
   const enabled =
     AsyncResult.isSuccess(preferencesResult) && preferencesResult.value.directPushEnabled === true;
+  const alerts = AsyncResult.isSuccess(preferencesResult)
+    ? directPushAlerts(preferencesResult.value)
+    : null;
   const connections = Object.values(savedConnectionsById);
+  const alertRows = [
+    { kind: "notifyOnCompletion", icon: "checkmark.circle", label: gt("Finished") },
+    { kind: "notifyOnFailure", icon: "exclamationmark.circle", label: gt("Failed") },
+    { kind: "notifyOnApproval", icon: "exclamationmark.shield", label: gt("Needs approval") },
+    { kind: "notifyOnInput", icon: "questionmark.bubble", label: gt("Needs input") },
+  ] as const;
+
+  const handleAlertChange = async ({
+    kind,
+    enabled: next,
+  }: {
+    readonly kind: DirectPushAlertKind;
+    readonly enabled: boolean;
+  }) => {
+    const result = await settleAsyncResult(() =>
+      Effect.runPromiseExit(setDirectPushAlert({ kind, enabled: next })),
+    );
+    if (result._tag === "Failure" && !isAtomCommandInterrupted(result)) {
+      Dialog.alert(gt("Notifications unavailable"), gt("Could not update notifications."));
+    }
+  };
 
   const statusLabel = (environmentId: EnvironmentId) => {
     if (!connectedEnvironmentIds.includes(environmentId)) return gt("Not connected");
@@ -155,6 +182,22 @@ export function DirectPushNotificationsScreen() {
             onValueChange={(next) => void handleChange(next)}
           />
         </SettingsSection>
+        {enabled && permission === "granted" && alerts !== null ? (
+          <SettingsSection
+            title={gt("Alerts")}
+            footer={gt("Your environments send this device only the alerts turned on here.")}
+          >
+            {alertRows.map((row) => (
+              <SettingsSwitchRow
+                key={row.kind}
+                icon={row.icon}
+                label={row.label}
+                value={alerts[row.kind]}
+                onValueChange={(next) => void handleAlertChange({ kind: row.kind, enabled: next })}
+              />
+            ))}
+          </SettingsSection>
+        ) : null}
         {enabled && permission === "granted" && connections.length > 0 ? (
           <SettingsSection title={gt("Environments")}>
             {connections.map((connection) => (

@@ -14,6 +14,10 @@ import { appAtomRegistry } from "../../state/atom-registry";
 import { threadArrangementOpenAtom } from "../../state/thread-order";
 import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
+import {
+  setThreadNotificationLevel,
+  useThreadNotificationLevel,
+} from "../agent-awareness/threadNotificationLevels";
 import { useVisibleSecondClock } from "./use-visible-second-clock";
 import type { ThreadMoveDestination } from "./threadOrder";
 import type {
@@ -1074,6 +1078,42 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         : [],
     [gt, props.autoSettleOptOutSupported, thread.autoSettleDisabledAt],
   );
+  const notificationLevel = useThreadNotificationLevel({
+    environmentId: thread.environmentId,
+    threadId: thread.id,
+  });
+  const setNotificationLevel = useAtomCommand(setThreadNotificationLevel);
+  const notificationMenuItems = useMemo<MenuAction[]>(
+    () =>
+      notificationLevel === null
+        ? []
+        : [
+            {
+              id: "notifications",
+              title: gt("Notifications"),
+              image: notificationLevel === "off" ? "bell.slash" : "bell",
+              subactions: [
+                {
+                  id: "notifications:all",
+                  title: gt("All", { $context: "thread notification level" }),
+                  state: notificationLevel === "all" ? "on" : "off",
+                },
+                {
+                  id: "notifications:needs-me",
+                  title: gt("Needs me", { $context: "thread notification level" }),
+                  subtitle: gt("Approvals and input only"),
+                  state: notificationLevel === "needs-me" ? "on" : "off",
+                },
+                {
+                  id: "notifications:off",
+                  title: gt("Off", { $context: "thread notification level" }),
+                  state: notificationLevel === "off" ? "on" : "off",
+                },
+              ],
+            } satisfies MenuAction,
+          ],
+    [gt, notificationLevel],
+  );
   const canTurnIntoProject = canTurnThreadIntoProject(thread);
   const titleMenuItems = useMemo<MenuAction[]>(
     () => [
@@ -1142,6 +1182,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           secondary: [
             ...titleMenuItems,
             ...autoSettleMenuItems,
+            ...notificationMenuItems,
             localized(LEGACY_MENU_ACTIONS[0]!),
             localized(SNOOZED_MENU_ACTIONS[1]!),
           ],
@@ -1156,7 +1197,11 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           direct: [...direct, localized(LEGACY_MENU_ACTIONS[0]!)],
           reorder: reorderMenuItems,
           pin: pinMenuItems,
-          secondary: [...titleMenuItems, localized(LEGACY_MENU_ACTIONS[1]!)],
+          secondary: [
+            ...titleMenuItems,
+            ...notificationMenuItems,
+            localized(LEGACY_MENU_ACTIONS[1]!),
+          ],
         },
         m,
       );
@@ -1173,6 +1218,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
           secondary: [
             ...titleMenuItems,
             ...autoSettleMenuItems,
+            ...notificationMenuItems,
             localized(LEGACY_MENU_ACTIONS[0]!),
             localized(SLIM_MENU_ACTIONS[1]!),
           ],
@@ -1202,6 +1248,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
         secondary: [
           ...titleMenuItems,
           ...autoSettleMenuItems,
+          ...notificationMenuItems,
           localized(LEGACY_MENU_ACTIONS[0]!),
           localized(CARD_MENU_ACTIONS[1]!),
         ],
@@ -1212,6 +1259,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
     autoSettleMenuItems,
     canShareWithGuest,
     canUnsettle,
+    notificationMenuItems,
     pinMenuItems,
     props.settlementSupported,
     reorderMenuItems,
@@ -1233,6 +1281,15 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       if (nativeEvent.event === "unpin") handleUnpin();
       if (nativeEvent.event === "auto-settle:enabled") handleSetAutoSettle(true);
       if (nativeEvent.event === "auto-settle:disabled") handleSetAutoSettle(false);
+      if (nativeEvent.event.startsWith("notifications:")) {
+        const level = nativeEvent.event.slice("notifications:".length);
+        if (level === "all" || level === "needs-me" || level === "off") {
+          void setNotificationLevel({
+            environmentId: thread.environmentId,
+            input: { threadId: thread.id, level },
+          });
+        }
+      }
       if (nativeEvent.event === "arrange") appAtomRegistry.set(threadArrangementOpenAtom, true);
       if (nativeEvent.event === "move-up") handleMoveUp();
       if (nativeEvent.event === "move-down") handleMoveDown();
@@ -1307,6 +1364,7 @@ export const ThreadListV2Row = memo(function ThreadListV2Row(props: {
       handleUnsnooze,
       markThreadUnread,
       setCustomSnoozeOpen,
+      setNotificationLevel,
       snoozePresets,
       props.snoozePresets,
     ],

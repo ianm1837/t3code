@@ -6,17 +6,23 @@ import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as Semaphore from "effect/Semaphore";
 import { AtomRegistry, type Atom } from "effect/reactivity";
-import { AppState, Platform } from "react-native";
+import { AppState } from "react-native";
 import { msg } from "gt-react-native";
-import { EnvironmentAuthorizationError, WS_METHODS, type EnvironmentId } from "@t3tools/contracts";
+import {
+  EnvironmentAuthorizationError,
+  WS_METHODS,
+  type EnvironmentId,
+  type PushAlertPreferences,
+} from "@t3tools/contracts";
 import { createEnvironmentRpcCommand } from "@t3tools/client-runtime/state/runtime";
 
 import { connectionAtomRuntime } from "../../connection/runtime";
 import { m } from "../../i18n/messages";
 import { loadOrCreateAgentAwarenessDeviceId } from "../../persistence/imperative";
+import type { Preferences } from "../../persistence/mobile-preferences";
 import { appAtomRegistry } from "../../state/atom-registry";
 import { mobilePreferencesAtom, saveMobilePreferences } from "../../state/preferences";
-import { agentAwarenessPushMode } from "./capabilities";
+import { supportsDirectPush } from "./capabilities";
 import {
   requestAgentNotificationPermission,
   type NotificationPermissionResult,
@@ -33,6 +39,19 @@ export type DirectPushEnvironmentStatus =
 export type DirectPushEnableResult = NotificationPermissionResult;
 
 const UNREGISTER_ON_REMOVE_TIMEOUT = "3 seconds";
+
+const ALL_ALERTS: PushAlertPreferences = {
+  notifyOnCompletion: true,
+  notifyOnFailure: true,
+  notifyOnApproval: true,
+  notifyOnInput: true,
+};
+
+export type DirectPushAlertKind = keyof PushAlertPreferences;
+
+export function directPushAlerts(preferences: Preferences): PushAlertPreferences {
+  return preferences.directPushAlerts ?? ALL_ALERTS;
+}
 
 const registerCommand = createEnvironmentRpcCommand(connectionAtomRuntime, {
   label: "mobile:push:register",
@@ -97,10 +116,6 @@ function setStatus({
   else next.set(environmentId, status);
   statuses = next;
   for (const listener of statusListeners) listener();
-}
-
-function directPushActive(): boolean {
-  return Platform.OS === "ios" && agentAwarenessPushMode() === "direct";
 }
 
 function lockFor(environmentId: EnvironmentId): Semaphore.Semaphore {
@@ -172,6 +187,7 @@ const reconcileUnlocked = Effect.fn("directPushRegistration.reconcileUnlocked")(
         apsEnvironment: resolveApsEnvironment(Constants.expoConfig?.extra),
         label: deviceLabel(),
         ...(appVersion ? { appVersion } : {}),
+        preferences: directPushAlerts(preferences),
       },
     }),
   );
@@ -222,12 +238,23 @@ export const setDirectPushEnabled = Effect.fn("directPushRegistration.setDirectP
   },
 );
 
+export const setDirectPushAlert = Effect.fn("directPushRegistration.setDirectPushAlert")(
+  function* ({ kind, enabled }: { readonly kind: DirectPushAlertKind; readonly enabled: boolean }) {
+    yield* saveMobilePreferences.run(appAtomRegistry, {
+      transform: (current) => ({
+        directPushAlerts: { ...directPushAlerts(current), [kind]: enabled },
+      }),
+    });
+    yield* reconcileConnected();
+  },
+);
+
 export function unregisterDirectPushForEnvironment({
   environmentId,
 }: {
   readonly environmentId: EnvironmentId;
 }): Promise<void> {
-  if (!directPushActive() || !connectedEnvironmentIds.has(environmentId)) {
+  if (!supportsDirectPush() || !connectedEnvironmentIds.has(environmentId)) {
     setStatus({ environmentId, status: null });
     return Promise.resolve();
   }
@@ -253,7 +280,7 @@ export function installDirectPushRegistration({
 }: {
   readonly connectedEnvironmentIdsAtom: Atom.Atom<ReadonlyArray<EnvironmentId>>;
 }): () => void {
-  if (!directPushActive()) return () => {};
+  if (!supportsDirectPush()) return () => {};
   const runReconcile = (environmentId: EnvironmentId) => {
     void Effect.runPromise(reconcile(environmentId));
   };

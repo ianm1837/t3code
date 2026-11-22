@@ -15,6 +15,7 @@ import {
   PullRequestListFilters,
   PullRequestListState,
   type ProviderInstanceId,
+  PushAlertPreferences,
   PullRequestMergeMethod,
   type SidebarProjectGroupingMode,
 } from "@t3tools/contracts";
@@ -145,6 +146,7 @@ export interface Preferences {
   readonly pullRequestMergeMethod?: PullRequestMergeMethod;
   readonly liveActivitiesEnabled?: boolean;
   readonly directPushEnabled?: boolean;
+  readonly directPushAlerts?: PushAlertPreferences;
   readonly themeId?: MobileThemeId;
   readonly lightThemeId?: MobileThemeId;
   readonly darkThemeId?: MobileThemeId;
@@ -237,6 +239,7 @@ export class MobilePreferencesStore extends Context.Service<
 
 const isToolCallVisibility = Schema.is(ToolCallVisibility);
 const isPullRequestMergeMethod = Schema.is(PullRequestMergeMethod);
+const isPushAlertPreferences = Schema.is(PushAlertPreferences);
 
 function sanitizePreferences(parsed: Preferences): Preferences {
   const preferences: {
@@ -248,6 +251,7 @@ function sanitizePreferences(parsed: Preferences): Preferences {
     pullRequestMergeMethod?: PullRequestMergeMethod;
     liveActivitiesEnabled?: boolean;
     directPushEnabled?: boolean;
+    directPushAlerts?: PushAlertPreferences;
     themeId?: MobileThemeId;
     lightThemeId?: MobileThemeId;
     darkThemeId?: MobileThemeId;
@@ -323,6 +327,9 @@ function sanitizePreferences(parsed: Preferences): Preferences {
   }
   if (typeof parsed.directPushEnabled === "boolean") {
     preferences.directPushEnabled = parsed.directPushEnabled;
+  }
+  if (isPushAlertPreferences(parsed.directPushAlerts)) {
+    preferences.directPushAlerts = parsed.directPushAlerts;
   }
   if (
     typeof parsed.themeId === "string" &&

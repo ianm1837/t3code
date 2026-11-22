@@ -1,19 +1,28 @@
-import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "@effect/vitest";
+import { beforeEach, vi } from "vite-plus/test";
 import { EnvironmentId } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
-import { AsyncResult, Atom } from "effect/reactivity";
+import { AsyncResult, Atom, type AtomRegistry } from "effect/reactivity";
 
+import type { PushAlertPreferences } from "@t3tools/contracts";
 import type { Preferences } from "../../persistence/mobile-preferences";
 import { appAtomRegistry } from "../../state/atom-registry";
 import {
   __resetDirectPushRegistrationForTest,
   installDirectPushRegistration,
+  setDirectPushAlert,
 } from "./directPushRegistration";
 
 const ENVIRONMENT_A = EnvironmentId.make("environment-a");
 const ENVIRONMENT_B = EnvironmentId.make("environment-b");
 const FIRST_TOKEN = "a".repeat(64);
 const ROTATED_TOKEN = "b".repeat(64);
+const ALL_ALERTS: PushAlertPreferences = {
+  notifyOnCompletion: true,
+  notifyOnFailure: true,
+  notifyOnApproval: true,
+  notifyOnInput: true,
+};
 
 type RpcCall = {
   readonly tag: string;
@@ -65,14 +74,30 @@ vi.mock("../../state/preferences", async () => {
   preferences.atom = reactivity.Atom.make<AsyncResult.AsyncResult<Preferences, never>>(
     reactivity.AsyncResult.success({}),
   ).pipe(reactivity.Atom.keepAlive);
-  return { mobilePreferencesAtom: preferences.atom, saveMobilePreferences: { run: vi.fn() } };
+  const atom = preferences.atom;
+  return {
+    mobilePreferencesAtom: atom,
+    saveMobilePreferences: {
+      run: (
+        registry: AtomRegistry.AtomRegistry,
+        update: { readonly transform: (current: Preferences) => Partial<Preferences> },
+      ) =>
+        Effect.sync(() => {
+          const current = reactivity.AsyncResult.getOrElse(registry.get(atom), () => ({}));
+          registry.set(
+            atom,
+            reactivity.AsyncResult.success({ ...current, ...update.transform(current) }),
+          );
+        }),
+    },
+  };
 });
 
 vi.mock("../../persistence/imperative", () => ({
   loadOrCreateAgentAwarenessDeviceId: () => Promise.resolve("device-1"),
 }));
 
-vi.mock("./capabilities", () => ({ agentAwarenessPushMode: () => "direct" }));
+vi.mock("./capabilities", () => ({ supportsDirectPush: () => true }));
 
 vi.mock("expo-constants", () => ({
   default: {
@@ -121,9 +146,11 @@ function install(connected: ReadonlyArray<EnvironmentId>) {
 const registration = ({
   environmentId,
   token,
+  preferences = ALL_ALERTS,
 }: {
   readonly environmentId: EnvironmentId;
   readonly token: string;
+  readonly preferences?: PushAlertPreferences;
 }): RpcCall => ({
   tag: "push.registerDevice",
   environmentId,
@@ -134,6 +161,7 @@ const registration = ({
     apsEnvironment: "sandbox",
     label: "Test iPhone",
     appVersion: "2.3.0",
+    preferences,
   },
 });
 
@@ -145,22 +173,42 @@ describe("installDirectPushRegistration", () => {
     __resetDirectPushRegistrationForTest();
   });
 
-  it("re-registers every connected environment when the push token rotates", async () => {
-    setPreferences({ directPushEnabled: true });
-    using _registration = install([ENVIRONMENT_A, ENVIRONMENT_B]);
-    await callsReach(2);
-    expect(byEnvironment(rpc.calls)).toEqual([
-      registration({ environmentId: ENVIRONMENT_A, token: FIRST_TOKEN }),
-      registration({ environmentId: ENVIRONMENT_B, token: FIRST_TOKEN }),
-    ]);
+  it.effect(
+    "re-registers every connected environment when the token rotates or an alert kind changes",
+    () =>
+      Effect.gen(function* () {
+        setPreferences({ directPushEnabled: true });
+        using _registration = install([ENVIRONMENT_A, ENVIRONMENT_B]);
+        yield* Effect.promise(() => callsReach(2));
+        expect(byEnvironment(rpc.calls)).toEqual([
+          registration({ environmentId: ENVIRONMENT_A, token: FIRST_TOKEN }),
+          registration({ environmentId: ENVIRONMENT_B, token: FIRST_TOKEN }),
+        ]);
 
-    for (const listener of tokenListeners) listener({ type: "ios", data: ROTATED_TOKEN });
-    await callsReach(4);
-    expect(byEnvironment(rpc.calls.slice(2))).toEqual([
-      registration({ environmentId: ENVIRONMENT_A, token: ROTATED_TOKEN }),
-      registration({ environmentId: ENVIRONMENT_B, token: ROTATED_TOKEN }),
-    ]);
-  });
+        for (const listener of tokenListeners) listener({ type: "ios", data: ROTATED_TOKEN });
+        yield* Effect.promise(() => callsReach(4));
+        expect(byEnvironment(rpc.calls.slice(2))).toEqual([
+          registration({ environmentId: ENVIRONMENT_A, token: ROTATED_TOKEN }),
+          registration({ environmentId: ENVIRONMENT_B, token: ROTATED_TOKEN }),
+        ]);
+
+        yield* setDirectPushAlert({ kind: "notifyOnCompletion", enabled: false });
+        yield* Effect.promise(() => callsReach(6));
+        const withoutCompletion = { ...ALL_ALERTS, notifyOnCompletion: false };
+        expect(byEnvironment(rpc.calls.slice(4))).toEqual([
+          registration({
+            environmentId: ENVIRONMENT_A,
+            token: ROTATED_TOKEN,
+            preferences: withoutCompletion,
+          }),
+          registration({
+            environmentId: ENVIRONMENT_B,
+            token: ROTATED_TOKEN,
+            preferences: withoutCompletion,
+          }),
+        ]);
+      }),
+  );
 
   it("unregisters a newly connected environment while the preference is off", async () => {
     setPreferences({});
