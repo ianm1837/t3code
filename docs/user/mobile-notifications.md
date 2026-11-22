@@ -4,7 +4,7 @@ Get push alerts, Live Activities, and home-screen widgets on iOS and Android whe
 
 ## Prerequisites
 
-- Sign in to **T3 Connect** on both your phone and host machine (direct/Tailscale connections alone do not deliver background push notifications).
+- Sign in to **T3 Connect** on both your phone and host machine (direct/Tailscale connections alone do not deliver background push notifications, except in a [self-built iOS app](#self-built-ios-app)).
 - Enable **Publish agent activity** in **Settings → Sharing & access** on the host.
 - Enable **Device Notifications** in **Settings → Notifications** on mobile (Android requires Android 7.0+ and Google Play services).
 
@@ -18,3 +18,18 @@ Get push alerts, Live Activities, and home-screen widgets on iOS and Android whe
 
 - Ordinary alerts are muted while the mobile app is in the foreground, though viewing a thread on another device does not silence your phone.
 - Force-stopping T3 Code in Android system Settings pauses push delivery until you reopen the app.
+
+## Self-built iOS app
+
+An iOS app you build under your own Apple Developer team receives alerts straight from your environments, without T3 Connect. Live Activity updates are not available in this app.
+
+1. In your Apple Developer account, create a key with **Apple Push Notifications service (APNs)** enabled and download its `.p8` file. Note the key ID and your team ID.
+2. On each environment that should send alerts, install the key:
+
+   ```bash
+   t3 push key set --key-file <file> --key-id <id> --team-id <team>
+   ```
+
+3. In the app, turn on **Device Notifications** in **Settings → Notifications**. Each connected environment shows **Ready** once it can send alerts to this device.
+
+An environment shows **Server has no APNs key** until step 2 is done on it. Turning the switch off, or removing a connected environment from the app, stops its alerts.
