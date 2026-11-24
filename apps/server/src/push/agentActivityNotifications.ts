@@ -123,7 +123,12 @@ function truncateText(input: { readonly value: string; readonly maxLength: numbe
   if (trimmed.length <= input.maxLength) {
     return trimmed;
   }
-  return trimmed.slice(0, input.maxLength - 3).trimEnd() + "...";
+  return (
+    trimmed
+      .slice(0, input.maxLength - 3)
+      .replace(/[\uD800-\uDBFF]$/, "")
+      .trimEnd() + "..."
+  );
 }
 
 function sanitizeDeepLink(value: string): string {
